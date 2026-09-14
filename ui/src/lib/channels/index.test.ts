@@ -522,7 +522,7 @@ describe("channels controller DM pairing", () => {
   });
 
   it("records dismiss as the in-flight pairing operation", async () => {
-    const dismissal = createDeferred<void>();
+    const dismissal = createDeferred();
     let listCount = 0;
     const request = vi.fn(async (method: string) => {
       if (method === "channels.pairing.list") {
