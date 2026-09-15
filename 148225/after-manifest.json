@@ -1,0 +1,60 @@
+{
+  "phase": "after",
+  "pendingPath": "/tmp/control-ui-e2e/pairing-dismiss-after-hRKpp3/after-dismiss-pending.png",
+  "recoveryPath": "/tmp/control-ui-e2e/pairing-dismiss-after-hRKpp3/after-dismiss-recovery.png",
+  "approvePath": "/tmp/control-ui-e2e/pairing-dismiss-after-hRKpp3/after-approve-pending.png",
+  "pendingLabels": {
+    "rowApprove": {
+      "text": "Approve",
+      "aria": "Approve 555000111 for Telegram, account Work",
+      "disabled": true
+    },
+    "rowDismiss": {
+      "text": "Dismissing…",
+      "aria": "Dismissing 555000111 for Telegram, account Work",
+      "disabled": true
+    },
+    "confirm": {
+      "text": "Dismissing…",
+      "disabled": true
+    },
+    "alert": null,
+    "hasLoadingCopy": false
+  },
+  "recoveryLabels": {
+    "rowApprove": {
+      "text": "Approve",
+      "aria": "Approve 555000111 for Telegram, account Work",
+      "disabled": false
+    },
+    "rowDismiss": {
+      "text": "Dismiss",
+      "aria": "Dismiss 555000111 for Telegram, account Work",
+      "disabled": false
+    },
+    "confirm": {
+      "text": "Dismiss",
+      "disabled": false
+    },
+    "alert": "Dismissal failed",
+    "hasLoadingCopy": false
+  },
+  "approveLabels": {
+    "rowApprove": {
+      "text": "Approving…",
+      "aria": "Approving 555000111 for Telegram, account Work",
+      "disabled": true
+    },
+    "rowDismiss": {
+      "text": "Dismiss",
+      "aria": "Dismiss 555000111 for Telegram, account Work",
+      "disabled": true
+    },
+    "confirm": {
+      "text": "Approving…",
+      "disabled": true
+    },
+    "alert": null,
+    "hasLoadingCopy": false
+  }
+}

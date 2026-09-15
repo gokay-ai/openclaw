@@ -1,0 +1,22 @@
+{
+  "phase": "before",
+  "pendingPath": "/tmp/control-ui-e2e/pairing-dismiss-before-Ws2Mgy/before-dismiss-pending.png",
+  "pendingLabels": {
+    "rowApprove": {
+      "text": "Loading…",
+      "aria": "Approve 555000111 for Telegram, account Work",
+      "disabled": true
+    },
+    "rowDismiss": {
+      "text": "Dismiss",
+      "aria": "Dismiss 555000111 for Telegram, account Work",
+      "disabled": true
+    },
+    "confirm": {
+      "text": "Dismiss",
+      "disabled": true
+    },
+    "alert": null,
+    "hasLoadingCopy": true
+  }
+}
