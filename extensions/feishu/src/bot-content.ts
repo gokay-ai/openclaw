@@ -1,3 +1,4 @@
+import { mediaKindFromMime, mimeTypeFromFilePath } from "openclaw/plugin-sdk/media-mime";
 import { escapeRegExp } from "openclaw/plugin-sdk/text-utility-runtime";
 import type { ClawdbotConfig } from "../runtime-api.js";
 import {
@@ -236,6 +237,20 @@ function resolveFeishuMediaKind(messageType: string): FeishuMediaInfo["kind"] {
   }
 }
 
+function resolvePostAttachmentMediaKind(attachment: {
+  kind: "image" | "file";
+  fileName?: string;
+}): FeishuMediaInfo["kind"] {
+  if (attachment.kind === "image") {
+    return "image";
+  }
+  if (!attachment.fileName) {
+    return "video";
+  }
+  const inferred = mediaKindFromMime(mimeTypeFromFilePath(attachment.fileName));
+  return inferred && inferred !== "unknown" ? inferred : "document";
+}
+
 export async function resolveFeishuMediaList(params: {
   cfg: ClawdbotConfig;
   messageId: string;
@@ -276,7 +291,7 @@ export async function resolveFeishuMediaList(params: {
         key: attachment.key,
         type: attachment.kind,
         fileName: attachment.kind === "file" ? attachment.fileName : undefined,
-        kind: attachment.kind === "image" ? "image" : "video",
+        kind: resolvePostAttachmentMediaKind(attachment),
         label: `embedded ${attachment.kind} ${attachment.key}`,
       });
     }
