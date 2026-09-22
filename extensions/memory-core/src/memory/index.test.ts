@@ -16,6 +16,7 @@ import {
 import { resolveSessionTranscriptsDirForAgent } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { deleteSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { resolveOpenClawAgentSqlitePath } from "openclaw/plugin-sdk/sqlite-runtime";
+import * as sqliteRuntime from "openclaw/plugin-sdk/sqlite-runtime";
 import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
@@ -1097,14 +1098,44 @@ describe("memory index", () => {
       batchEnabled: true,
     });
     const manager = await getFreshManager(cfg);
+    const run = sqliteRuntime.runSqliteWorkerStoreWrite;
+    let queuedAbsentDiscard = false;
+    const writeSpy = vi.spyOn(sqliteRuntime, "runSqliteWorkerStoreWrite").mockImplementation(
+      (store, operation, assertCurrent, nativeLocations) =>
+        run(
+          store,
+          (scope) =>
+            operation({
+              execute: async (command, options) => {
+                if (command.type === "stage.start" && !queuedAbsentDiscard) {
+                  queuedAbsentDiscard = true;
+                  // An absent discard does not mutate staging; it only forces the
+                  // following start onto the worker-reply queue path.
+                  const discard = scope.execute({
+                    type: "stage.discard",
+                    input: { operation: "absent-queued-owner" },
+                  });
+                  const start = scope.execute(command, options);
+                  const [, result] = await Promise.all([discard, start]);
+                  return result;
+                }
+                return scope.execute(command, options);
+              },
+            }),
+          assertCurrent,
+          nativeLocations,
+        ),
+    );
     try {
       await manager.sync({ reason: "test" });
 
+      expect(queuedAbsentDiscard).toBe(true);
       expect(providerFixture.providerRuntimeBatchCalls).toHaveLength(2);
       expect(providerFixture.providerRuntimeBatchCalls[0]).toHaveLength(batchFileLimit);
       expect(providerFixture.providerRuntimeBatchCalls[1]).toHaveLength(1);
       expect(providerFixture.providerRuntimeBatchCalls.flat()).toHaveLength(batchFileLimit + 1);
     } finally {
+      writeSpy.mockRestore();
       await manager.close?.();
     }
   });

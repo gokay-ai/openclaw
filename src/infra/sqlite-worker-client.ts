@@ -109,12 +109,15 @@ export function createSqliteWorkerClient<Operations extends SqliteWorkerOperatio
         );
       }
       const createAdmission = scope?.createAdmission;
-      const inCaller = createAdmission ? AsyncLocalStorage.snapshot() : undefined;
+      // Queued dispatch rechecks ownership on the worker-reply callback, which
+      // does not inherit the caller's async-local owner context.
+      const inCaller =
+        createAdmission || assertCurrent ? AsyncLocalStorage.snapshot() : undefined;
       const operation = owner.dispatch(
         payload,
         options.signal,
         scope,
-        assertCurrent,
+        assertCurrent && inCaller ? () => inCaller(assertCurrent) : undefined,
         createAdmission && inCaller
           ? (admissionOperation) => inCaller(createAdmission, admissionOperation)
           : undefined,

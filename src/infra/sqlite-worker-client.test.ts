@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { Actor } from "./sqlite-worker-broker.types.js";
@@ -124,5 +125,42 @@ it("lets an admitted scope finish through close before releasing its owner", asy
     resume.resolve();
     committed.resolve("committed");
     await Promise.allSettled([accepted, closing]);
+  }
+});
+
+it("rechecks queued command ownership in the caller's async-local context", async () => {
+  const owner = new AsyncLocalStorage<string>();
+  const seen: Array<string | undefined> = [];
+  const { client, store } = createSqliteWorkerClient<Operations>({
+    actor: createActor(),
+    isDraining: () => false,
+    isAvailable: () => true,
+    dispatch: async (_payload, _signal, _scope, assertCurrent) => {
+      await Promise.resolve();
+      return owner.exit(() => {
+        assertCurrent?.();
+        return "committed";
+      });
+    },
+    release: async () => {},
+  });
+  try {
+    await owner.run("shadow", () =>
+      runSqliteWorkerClientOperation(
+        client,
+        (scope) => scope.execute({ type: "write", input: "queued" }),
+        undefined,
+        () => () => {},
+        () => {
+          seen.push(owner.getStore());
+          if (owner.getStore() !== "shadow") {
+            throw new Error("Memory source owner changed before replacement");
+          }
+        },
+      ),
+    );
+    expect(seen).toEqual(["shadow", "shadow"]);
+  } finally {
+    await store.close();
   }
 });
