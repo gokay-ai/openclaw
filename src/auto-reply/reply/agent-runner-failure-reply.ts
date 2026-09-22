@@ -19,6 +19,7 @@ import {
   findCliTerminalStopError,
   findCliTimeoutError,
   isFailoverError,
+  isLocalWorkerTaskTimeoutFailure,
 } from "../../agents/failover-error.js";
 import {
   renderAssistantRequestFailureCopy,
@@ -61,9 +62,13 @@ import type { ReplyPayload } from "../types.js";
 export function resolveReplyFailoverFacts(error: unknown, message: string) {
   const described = describeFailoverError(error);
   const rawError = described.rawError ?? message;
-  const status = extractErrorHttpStatus(rawError)?.code ?? described.status;
-  const reason =
-    described.reason ?? classifyFailoverReason(rawError, { provider: described.provider });
+  const localWorkerTimeout = isLocalWorkerTaskTimeoutFailure(error);
+  const status = localWorkerTimeout
+    ? undefined
+    : (extractErrorHttpStatus(rawError)?.code ?? described.status);
+  const reason = localWorkerTimeout
+    ? undefined
+    : (described.reason ?? classifyFailoverReason(rawError, { provider: described.provider }));
   const classification = reason ? ({ kind: "reason", reason } as const) : null;
   return {
     reason: classification?.kind === "reason" ? classification.reason : undefined,
@@ -71,6 +76,7 @@ export function resolveReplyFailoverFacts(error: unknown, message: string) {
     provider: described.provider,
     model: described.model,
     status,
+    localStage: localWorkerTimeout ? ("context_timeout" as const) : undefined,
     authMode: described.authMode,
     formatFailureText: reason === "format" ? renderFormatErrorCopy(rawError) : undefined,
     providerRequestError: resolveProviderRequestFailureCopy({

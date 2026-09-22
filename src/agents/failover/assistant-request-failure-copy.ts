@@ -18,6 +18,14 @@ export const ERROR_PREFIX_RE =
   /^(?:error|(?:[a-z][\w-]*\s+)?api\s*error|openai\s*error|anthropic\s*error|gateway\s*error|codex\s*error|request failed|failed|exception)(?:\s+\d{3})?[:\s-]+/i;
 export const PROVIDER_SCHEMA_REJECTION_USER_TEXT =
   "LLM request failed: provider rejected the request schema or tool payload.";
+export const LOCAL_CONTEXT_TIMEOUT_USER_TEXT =
+  "⚠️ Local context preparation timed out. This is usually temporary — try again shortly.";
+const LOCAL_WORKER_TASK_TIMEOUT_MESSAGE = "worker task timed out";
+
+export function isLocalWorkerTaskTimeoutMessage(raw: string): boolean {
+  return raw.trim() === LOCAL_WORKER_TASK_TIMEOUT_MESSAGE;
+}
+
 const GATEWAY_SESSION_TRANSCRIPT_VALIDATION_USER_TEXT =
   "LLM request failed: the Gateway rejected a session transcript entry. Compact or reset this session and try again.";
 const PROVIDER_OUTPUT_TOKEN_LIMIT_RE =
@@ -32,6 +40,7 @@ type AssistantRequestFailureCopyFacts = {
   status?: number;
   storageFailure?: GatewayStorageFailure;
   code?: string;
+  localStage?: "context_timeout";
 };
 
 const STORAGE_FAILURE_COPY: Record<GatewayStorageFailure, string> = {
@@ -74,6 +83,9 @@ export function renderAssistantRequestFailureCopy(
 ): string | undefined {
   if (facts.storageFailure) {
     return `⚠️ Agent run failed: ${STORAGE_FAILURE_COPY[facts.storageFailure]}`;
+  }
+  if (facts.localStage === "context_timeout") {
+    return LOCAL_CONTEXT_TIMEOUT_USER_TEXT;
   }
   if (facts.code === "incomplete_tool_call") {
     return "⚠️ The provider returned an unfinished tool call. Earlier actions may have completed; verify their results before continuing.";
@@ -178,6 +190,9 @@ export function renderRecordedAssistantFailureCopy(message: {
     return formatCopy;
   }
   const raw = typeof message.errorMessage === "string" ? message.errorMessage.trim() : "";
+  if (isLocalWorkerTaskTimeoutMessage(raw)) {
+    return LOCAL_CONTEXT_TIMEOUT_USER_TEXT;
+  }
   if (raw === "Worker inference result exceeds the transcript message limit.") {
     return "The worker could not save the model response because it exceeded the message size limit. Retry with a smaller response or continue on the Gateway. Earlier actions may have completed; verify their results before continuing.";
   }

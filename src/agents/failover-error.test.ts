@@ -5,6 +5,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createAgentRunStaleLifecycleError } from "../infra/agent-lifecycle-error.js";
 import { attachErrorDiagnostic, formatErrorMessageForDisplay } from "../infra/error-diagnostics.js";
+import { WorkerTaskError } from "../infra/worker-task-pool.js";
 import { getFailoverErrorCode } from "./failover/error.js";
 import { AgentHarnessPreflightError } from "./harness/errors.js";
 
@@ -909,6 +910,20 @@ describe("failover-error", () => {
         expect(isNonProviderRuntimeCoordinationError(error)).toBe(true);
         expect(resolveModelFallbackError(error)).toEqual({ kind: "coordination", error });
       }
+    });
+
+    it("returns true for local context-worker timeouts without blaming a provider", () => {
+      const timeout = new WorkerTaskError("worker task timed out", "timeout");
+      for (const error of [timeout, new Error("context preparation failed", { cause: timeout })]) {
+        expect(isNonProviderRuntimeCoordinationError(error)).toBe(true);
+        expect(resolveModelFallbackError(error)).toEqual({ kind: "coordination", error });
+      }
+      expect(
+        isNonProviderRuntimeCoordinationError({
+          status: 408,
+          message: "request timed out",
+        }),
+      ).toBe(false);
     });
 
     it("returns true for Codex missing tool-result local execution failures", () => {

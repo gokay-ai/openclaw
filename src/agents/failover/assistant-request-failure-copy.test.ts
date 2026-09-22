@@ -142,4 +142,30 @@ describe("renderAssistantRequestFailureCopy", () => {
       "⚠️ openai/test-model request failed (authentication failed). Re-authenticate the provider and try again.",
     );
   });
+
+  it("keeps local context-worker timeouts off the HTTP 408 request path", () => {
+    expect(
+      renderAssistantRequestFailureCopy({
+        ...target,
+        reason: "timeout",
+        status: 408,
+        localStage: "context_timeout",
+      }),
+    ).toBe(
+      "⚠️ Local context preparation timed out. This is usually temporary — try again shortly.",
+    );
+    expect(
+      formatUserFacingAssistantErrorText(
+        makeAssistantMessageFixture({ ...target, errorMessage: "worker task timed out" }),
+      ),
+    ).toBe(
+      "⚠️ Local context preparation timed out. This is usually temporary — try again shortly.",
+    );
+  });
+
+  it("still labels a genuine provider timeout as HTTP 408", () => {
+    expect(renderAssistantRequestFailureCopy({ ...target, reason: "timeout", status: 408 })).toBe(
+      "⚠️ openai/test-model request failed (request timed out, HTTP 408). This is usually temporary — try again shortly.",
+    );
+  });
 });

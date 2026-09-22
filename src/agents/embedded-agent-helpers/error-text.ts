@@ -14,6 +14,8 @@ import {
   parseApiErrorInfo,
 } from "../../shared/assistant-error-format.js";
 import {
+  isLocalWorkerTaskTimeoutMessage,
+  LOCAL_CONTEXT_TIMEOUT_USER_TEXT,
   PROVIDER_SCHEMA_REJECTION_USER_TEXT,
   renderAssistantFormatFailureCopy,
   renderAssistantRequestFailureCopy,
@@ -248,6 +250,10 @@ export function formatAssistantErrorText(
   // Keep the raw reason in the message so operators still see the provider signal (#109218).
   if (isProviderCompletedErrorFinishReasonMessage(raw)) {
     return formatRawAssistantErrorForUi(raw);
+  }
+
+  if (isLocalWorkerTaskTimeoutMessage(raw)) {
+    return LOCAL_CONTEXT_TIMEOUT_USER_TEXT;
   }
 
   if (isTimeoutErrorMessage(raw) && !(facts?.status !== undefined && facts.status >= 500)) {

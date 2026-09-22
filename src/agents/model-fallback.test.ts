@@ -12,6 +12,7 @@ import {
   resetDiagnosticEventsForTest,
   type DiagnosticEventPayload,
 } from "../infra/diagnostic-events.js";
+import { WorkerTaskError } from "../infra/worker-task-pool.js";
 import { resetLogger, setLoggerOverride } from "../logging/logger.js";
 import { createWarnLogCapture } from "../logging/test-helpers/warn-log-capture.js";
 import { GatewayDrainingError } from "../process/gateway-work-admission.js";
@@ -2235,6 +2236,17 @@ describe("runWithModelFallback", () => {
           cause: Object.assign(new Error("session already has an active turn claim"), {
             name: "ActiveTurnClaimError",
           }),
+        }),
+    ],
+    [
+      "aborts fallback on local context-worker timeouts",
+      () => new WorkerTaskError("worker task timed out", "timeout"),
+    ],
+    [
+      "aborts fallback on wrapped local context-worker timeouts",
+      () =>
+        new Error("context preparation failed", {
+          cause: new WorkerTaskError("worker task timed out", "timeout"),
         }),
     ],
   ])("%s", async (_label, makeError) => {

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { diagnosticErrorFailureKind } from "../infra/diagnostic-error-metadata.js";
 import { attachErrorDiagnostic, formatErrorMessageForDisplay } from "../infra/error-diagnostics.js";
 import { formatErrorMessage } from "../infra/errors.js";
+import { WorkerTaskError } from "../infra/worker-task-pool.js";
 import {
   buildFailoverRemediationHint,
   coerceToFailoverError,
@@ -9,6 +10,7 @@ import {
   FailoverError,
   hasProviderRequestSizeCeiling,
   isTimeoutError,
+  resolveModelFallbackError,
 } from "./failover-error.js";
 import { isLikelyContextOverflowError } from "./failover/classify.js";
 
@@ -84,6 +86,40 @@ describe("failover diagnostic isolation", () => {
     expect(describeFailoverError(original).status).toBe(401);
     expect(normalized).toMatchObject({ reason: "auth", status: 401, cause: original });
     expect(buildFailoverRemediationHint(normalized)).toContain("Re-authenticate with:");
+  });
+
+  it("does not synthesize HTTP 408 for a local context-worker timeout", () => {
+    const error = new WorkerTaskError("worker task timed out", "timeout");
+    const wrapped = new Error("context preparation failed", { cause: error });
+    const context = { provider: "openai", model: "gpt-6-astra" };
+
+    for (const candidate of [error, wrapped]) {
+      expect(coerceToFailoverError(candidate, context)).toBeNull();
+      expect(describeFailoverError(candidate)).not.toMatchObject({ status: 408 });
+      expect(describeFailoverError(candidate).reason).toBeUndefined();
+      expect(describeFailoverError(candidate).status).toBeUndefined();
+      expect(resolveModelFallbackError(candidate, context)).toEqual({
+        kind: "coordination",
+        error: candidate,
+      });
+    }
+  });
+
+  it("retains a genuine provider HTTP 408 timeout", () => {
+    const original = Object.freeze(Object.assign(new Error("request timed out"), { status: 408 }));
+    const normalized = coerceToFailoverError(original, {
+      provider: "openai",
+      model: "gpt-6-astra",
+    });
+
+    expect(describeFailoverError(original).status).toBe(408);
+    expect(normalized).toMatchObject({
+      reason: "timeout",
+      status: 408,
+      provider: "openai",
+      model: "gpt-6-astra",
+      cause: original,
+    });
   });
 
   it.each([

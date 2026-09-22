@@ -6,6 +6,7 @@ import {
 } from "../../agents/failover/user-copy.js";
 import { AgentHarnessPreflightError } from "../../agents/harness/errors.js";
 import { resolveReplyCompletion } from "../../agents/reply-completion.js";
+import { WorkerTaskError } from "../../infra/worker-task-pool.js";
 import { getReplyPayloadMetadata } from "../reply-payload.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import {
@@ -174,6 +175,42 @@ describe("buildExternalRunFailureReply", () => {
     expect(reply.text).toContain("openai/test-model");
     expect(reply.text).not.toContain("secret-canary");
     expect(reply.text).not.toBe(GENERIC_EXTERNAL_RUN_FAILURE_TEXT);
+    expect(reply.isGenericRunnerFailure).toBe(false);
+  });
+
+  it("names a local context-worker timeout without HTTP 408", () => {
+    const error = new WorkerTaskError("worker task timed out", "timeout");
+    const reply = buildExternalRunFailureReply(
+      { message: error.message, error },
+      { includeDetails: false },
+    );
+
+    expect(reply).toEqual({
+      text: "⚠️ Local context preparation timed out. This is usually temporary — try again shortly.",
+      isGenericRunnerFailure: false,
+    });
+    expect(reply.text).not.toContain("HTTP 408");
+    expect(reply.text).not.toContain("openai/");
+  });
+
+  it("keeps genuine provider HTTP 408 copy on the request-failure path", () => {
+    const message = "request timed out";
+    const reply = buildExternalRunFailureReply(
+      {
+        message,
+        error: new FailoverError(message, {
+          reason: "timeout",
+          provider: "openai",
+          model: "gpt-6-astra",
+          status: 408,
+        }),
+      },
+      { includeDetails: false },
+    );
+
+    expect(reply.text).toBe(
+      "⚠️ openai/gpt-6-astra request failed (request timed out, HTTP 408). This is usually temporary — try again shortly.",
+    );
     expect(reply.isGenericRunnerFailure).toBe(false);
   });
 });

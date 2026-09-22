@@ -54,7 +54,9 @@ const RUNTIME_COORDINATION_ERROR_NAMES = new Set([
   "WorkerRunnerCapacityError",
   "WorkerWorkspaceReconciliationError",
   "ActiveTurnClaimError",
+  "WorkerTaskError",
 ]);
+const LOCAL_WORKER_TASK_TIMEOUT_MESSAGE = "worker task timed out";
 
 export { recordModelFallbackStop } from "./model-fallback-stop.js";
 
@@ -317,6 +319,23 @@ function hasRuntimeCoordinationFailure(err: unknown): boolean {
   );
 }
 
+function isLocalWorkerTaskTimeoutCandidate(candidate: unknown): boolean {
+  if (readErrorName(candidate) === "WorkerTaskError") {
+    return readDirectErrorCode(candidate) === "timeout";
+  }
+  return readDirectErrorMessage(candidate) === LOCAL_WORKER_TASK_TIMEOUT_MESSAGE;
+}
+
+/** True when a local worker-pool deadline failed, not an upstream provider HTTP timeout. */
+export function isLocalWorkerTaskTimeoutFailure(err: unknown): boolean {
+  if (isFailoverError(err)) {
+    return false;
+  }
+  return collectErrorGraphCandidates(err, resolveNestedErrors).some(
+    isLocalWorkerTaskTimeoutCandidate,
+  );
+}
+
 function hasDirectProviderFailureIdentity(err: unknown): boolean {
   if (isFailoverError(err)) {
     return true;
@@ -470,6 +489,10 @@ function resolveFailoverClassificationFromError(
   if (isAgentHarnessPreflightError(err)) {
     return null;
   }
+  // Local worker-pool and runner coordination failures are not provider HTTP statuses.
+  if (hasRuntimeCoordinationFailure(err)) {
+    return null;
+  }
   return resolveFailoverClassificationFromErrorInternal(err, new Set<object>(), 0, providerHint);
 }
 
@@ -547,6 +570,13 @@ export function describeFailoverError(err: unknown): {
 } {
   if (isAgentHarnessPreflightError(err)) {
     return { message: err.message };
+  }
+  if (hasRuntimeCoordinationFailure(err) && !isFailoverError(err)) {
+    const signal = normalizeErrorSignal(err);
+    return {
+      message: signal.message ?? String(err),
+      code: signal.code,
+    };
   }
   if (isFailoverError(err)) {
     return {
@@ -626,6 +656,9 @@ export function coerceToFailoverError(
       return enriched;
     }
     return err;
+  }
+  if (hasRuntimeCoordinationFailure(err)) {
+    return null;
   }
   const reason = resolveFailoverReasonFromError(err, context?.provider);
   if (!reason) {

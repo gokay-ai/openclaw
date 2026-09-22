@@ -5,6 +5,7 @@ import { FailoverError } from "../../agents/failover-error.js";
 import { AgentHarnessPreflightError } from "../../agents/harness/errors.js";
 import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
 import { ProviderAuthError } from "../../agents/model-auth.js";
+import { WorkerTaskError } from "../../infra/worker-task-pool.js";
 import { getReplyPayloadMetadata } from "../reply-payload.js";
 import type { TemplateContext } from "../templating.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
@@ -993,6 +994,48 @@ describe("executeAgentTurn: provider failures", () => {
           "This is usually temporary — try again shortly.",
       );
       expect(result.payload.text).not.toContain("Something exploded");
+    }
+  });
+
+  it("surfaces a local context-worker timeout in Telegram without HTTP 408", async () => {
+    state.runEmbeddedAgentMock.mockRejectedValueOnce(
+      new WorkerTaskError("worker task timed out", "timeout"),
+    );
+
+    const result = await executeTestTurn({
+      sessionCtx: createDirectFailureSessionCtx("telegram"),
+    });
+
+    expect(result.kind).toBe("final");
+    if (result.kind === "final") {
+      expect(result.payload.isError).toBe(true);
+      expect(result.payload.text).toBe(
+        "⚠️ Local context preparation timed out. This is usually temporary — try again shortly.",
+      );
+      expect(result.payload.text).not.toContain("HTTP 408");
+      expect(result.payload.text).not.toContain("request failed");
+    }
+  });
+
+  it("still labels a genuine provider HTTP 408 timeout in Telegram", async () => {
+    state.runEmbeddedAgentMock.mockRejectedValueOnce(
+      new FailoverError("request timed out", {
+        reason: "timeout",
+        provider: "openai",
+        model: "gpt-6-astra",
+        status: 408,
+      }),
+    );
+
+    const result = await executeTestTurn({
+      sessionCtx: createDirectFailureSessionCtx("telegram"),
+    });
+
+    expect(result.kind).toBe("final");
+    if (result.kind === "final") {
+      expect(result.payload.text).toBe(
+        "⚠️ openai/gpt-6-astra request failed (request timed out, HTTP 408). This is usually temporary — try again shortly.",
+      );
     }
   });
 });
