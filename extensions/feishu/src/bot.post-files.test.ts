@@ -6,21 +6,33 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import "./bot.cleanup.test-support.js";
 import type { ClawdbotConfig, PluginRuntime } from "../runtime-api.js";
 import type { FeishuMessageEvent } from "./bot.js";
-import { handleFeishuMessage } from "./bot.js";
 import {
   createFeishuTestConfig,
   createFeishuTestEvent,
   createFeishuTestRoute,
 } from "./bot.test-support.js";
+import { feishuDedupeState } from "./dedup-state.js";
 import { setFeishuRuntime } from "./runtime.js";
 
 type SaveMessageResourceFeishu = typeof import("./media.js").saveMessageResourceFeishu;
 type ConfiguredBindingRoute = ReturnType<typeof resolveConfiguredBindingRoute>;
 
+function savedPostFile(params: Parameters<SaveMessageResourceFeishu>[0]) {
+  return {
+    saved: {
+      id: params.originalFilename ?? params.fileKey,
+      path: `/tmp/${params.originalFilename ?? params.fileKey}`,
+      size: Buffer.byteLength(params.fileKey),
+      contentType: params.originalFilename?.endsWith(".csv") ? "text/csv" : "application/zip",
+    },
+  };
+}
+
 function mockCallArg<T>(
   mock: { mock: { calls: unknown[][] } },
   callIndex: number,
   argIndex: number,
+  _type?: (value: unknown) => value is T,
 ): T {
   const call = mock.mock.calls[callIndex];
   if (!call) {
@@ -60,7 +72,9 @@ const {
   mockSendMessageFeishu: vi.fn().mockResolvedValue({ messageId: "pairing-msg", chatId: "oc-dm" }),
   mockGetMessageFeishu: vi.fn().mockResolvedValue(null),
   mockListFeishuThreadMessages: vi.fn().mockResolvedValue([]),
-  mockDownloadMessageResourceFeishu: vi.fn<SaveMessageResourceFeishu>(),
+  mockDownloadMessageResourceFeishu: vi.fn<SaveMessageResourceFeishu>(async (params) =>
+    savedPostFile(params),
+  ),
   mockCreateFeishuClient: vi.fn(),
   mockResolveAgentRoute: vi.fn((_params?: unknown) => createFeishuTestRoute()),
   mockReadSessionUpdatedAt: vi.fn((_params?: unknown): number | undefined => undefined),
@@ -274,6 +288,9 @@ vi.mock("openclaw/plugin-sdk/conversation-runtime", async () => {
   };
 });
 
+import { handleFeishuMessage } from "./bot.js";
+import { saveMessageResourceFeishu } from "./media.js";
+
 async function dispatchMessage(params: { cfg: ClawdbotConfig; event: FeishuMessageEvent }) {
   const runtime = createRuntimeEnv();
   const feishuConfig = params.cfg.channels?.feishu;
@@ -299,21 +316,11 @@ async function dispatchMessage(params: { cfg: ClawdbotConfig; event: FeishuMessa
   return runtime;
 }
 
-function savedPostFile(params: Parameters<SaveMessageResourceFeishu>[0]) {
-  return {
-    saved: {
-      id: params.originalFilename ?? params.fileKey,
-      path: `/tmp/${params.originalFilename ?? params.fileKey}`,
-      size: Buffer.byteLength(params.fileKey),
-      contentType: params.originalFilename?.endsWith(".csv") ? "text/csv" : "application/zip",
-    },
-  };
-}
-
 describe("handleFeishuMessage post files[]", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockDownloadMessageResourceFeishu
+    feishuDedupeState.reset();
+    vi.mocked(saveMessageResourceFeishu)
       .mockReset()
       .mockImplementation(async (params) => savedPostFile(params));
     mockShouldComputeCommandAuthorized.mockReset().mockReturnValue(false);
@@ -378,7 +385,7 @@ describe("handleFeishuMessage post files[]", () => {
       }),
     });
 
-    expect(mockDownloadMessageResourceFeishu).toHaveBeenCalledWith(
+    expect(saveMessageResourceFeishu).toHaveBeenCalledWith(
       expect.objectContaining({
         messageId: "msg-post-top-level-files",
         fileKey: "file_v3_0015l_1a389bce-aabb-ccdd-eeff-1234567890ab",
@@ -424,7 +431,7 @@ describe("handleFeishuMessage post files[]", () => {
     });
 
     expect(
-      mockDownloadMessageResourceFeishu.mock.calls.map(([request]) => ({
+      vi.mocked(saveMessageResourceFeishu).mock.calls.map(([request]) => ({
         fileKey: request.fileKey,
         fileName: request.originalFilename,
         type: request.type,
