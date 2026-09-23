@@ -289,7 +289,7 @@ vi.mock("openclaw/plugin-sdk/conversation-runtime", async () => {
 });
 
 import { handleFeishuMessage } from "./bot.js";
-import { saveMessageResourceFeishu } from "./media.js";
+import * as media from "./media.js";
 
 async function dispatchMessage(params: { cfg: ClawdbotConfig; event: FeishuMessageEvent }) {
   const runtime = createRuntimeEnv();
@@ -320,9 +320,16 @@ describe("handleFeishuMessage post files[]", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     feishuDedupeState.reset();
-    vi.mocked(saveMessageResourceFeishu)
-      .mockReset()
-      .mockImplementation(async (params) => savedPostFile(params));
+    // Bind the export resolveFeishuMediaList actually calls. File-local vi.mock
+    // factories are not the production binding in the shared extension worker.
+    const save = media.saveMessageResourceFeishu;
+    if (vi.isMockFunction(save)) {
+      save.mockReset().mockImplementation(async (params) => savedPostFile(params));
+    } else {
+      vi.spyOn(media, "saveMessageResourceFeishu").mockImplementation(async (params) =>
+        savedPostFile(params),
+      );
+    }
     mockShouldComputeCommandAuthorized.mockReset().mockReturnValue(false);
     mockGetMessageFeishu.mockReset().mockResolvedValue(null);
     mockListFeishuThreadMessages.mockReset().mockResolvedValue([]);
@@ -385,7 +392,7 @@ describe("handleFeishuMessage post files[]", () => {
       }),
     });
 
-    expect(saveMessageResourceFeishu).toHaveBeenCalledWith(
+    expect(media.saveMessageResourceFeishu).toHaveBeenCalledWith(
       expect.objectContaining({
         messageId: "msg-post-top-level-files",
         fileKey: "file_v3_0015l_1a389bce-aabb-ccdd-eeff-1234567890ab",
@@ -431,7 +438,7 @@ describe("handleFeishuMessage post files[]", () => {
     });
 
     expect(
-      vi.mocked(saveMessageResourceFeishu).mock.calls.map(([request]) => ({
+      vi.mocked(media.saveMessageResourceFeishu).mock.calls.map(([request]) => ({
         fileKey: request.fileKey,
         fileName: request.originalFilename,
         type: request.type,
