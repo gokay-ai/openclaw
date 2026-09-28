@@ -901,7 +901,7 @@ describe("Codex catalog list operation", () => {
     const survivorStarted = createDeferred<void>();
     f.listPage.mockImplementation(async (home) => {
       if (home === "home-0") {
-        return new Promise(() => undefined);
+        return new Promise(() => {});
       }
       survivorStarted.resolve();
       return surviving.promise;
@@ -957,7 +957,7 @@ describe("Codex catalog list operation", () => {
     const survivorStarted = createDeferred<void>();
     f.listPage.mockImplementation(async (home) => {
       if (home === "home-0") {
-        return new Promise(() => undefined);
+        return new Promise(() => {});
       }
       survivorStarted.resolve();
       return surviving.promise;
