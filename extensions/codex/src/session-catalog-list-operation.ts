@@ -194,7 +194,9 @@ async function finishLocalHost(
   agentId: string,
   host: LocalHost,
 ): Promise<CodexSessionCatalogHost> {
-  try {
+  // One host budget covers progressive page.next + projection; stalled pages must not
+  // keep publication pending past CODEX_CATALOG_LOCAL_HOST_RESPONSE_TIMEOUT_MS.
+  const pending = (async (): Promise<CodexSessionCatalogHost> => {
     for (;;) {
       const step = await host.page.next();
       params.signal?.throwIfAborted();
@@ -202,8 +204,18 @@ async function finishLocalHost(
         return await projectLocalHost(params, agentId, host.source, step.page);
       }
     }
-  } catch (error) {
-    return hostFailure(host.source, error);
+  })();
+  try {
+    try {
+      return await withTimeout(
+        pending,
+        CODEX_CATALOG_LOCAL_HOST_RESPONSE_TIMEOUT_MS,
+        "Codex session catalog host timed out",
+      );
+    } catch (error) {
+      void pending.catch(() => undefined);
+      return hostFailure(host.source, error);
+    }
   } finally {
     host.page.close();
   }
