@@ -1,4 +1,3 @@
-import { mediaKindFromMime, mimeTypeFromFilePath } from "openclaw/plugin-sdk/media-mime";
 import { escapeRegExp } from "openclaw/plugin-sdk/text-utility-runtime";
 import type { ClawdbotConfig } from "../runtime-api.js";
 import {
@@ -243,11 +242,7 @@ function resolvePostAttachmentMediaKind(
   if (attachment.kind === "image") {
     return "image";
   }
-  if (!attachment.fileName) {
-    return attachment.origin === "top-level" ? "document" : "video";
-  }
-  const inferred = mediaKindFromMime(mimeTypeFromFilePath(attachment.fileName));
-  return inferred && inferred !== "unknown" ? inferred : "document";
+  return attachment.origin === "top-level" ? "document" : "video";
 }
 
 export async function resolveFeishuMediaList(params: {

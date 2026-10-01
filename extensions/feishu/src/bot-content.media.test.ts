@@ -172,22 +172,22 @@ describe("resolveFeishuMediaList post files[]", () => {
     ]);
   });
 
-  it("keeps unnamed inline post media on the video fallback", async () => {
+  it.each([undefined, "clip", "clip.csv"])("keeps inline media %s as video", async (fileName) => {
     const media = await resolveFeishuMediaList({
       cfg,
       messageId: "msg-post-unnamed-media",
       messageType: "post",
       content: JSON.stringify({
         title: "",
-        content: [[{ tag: "media", file_key: "file_inline" }]],
+        content: [[{ tag: "media", file_key: "file_inline", file_name: fileName }]],
       }),
       maxBytes: 1024,
     });
 
     expect(media).toEqual([
       {
-        path: "/tmp/file_inline",
-        contentType: "video/mp4",
+        path: `/tmp/${fileName ?? "file_inline"}`,
+        contentType: fileName?.endsWith(".csv") ? "text/csv" : "video/mp4",
         kind: "video",
       },
     ]);
