@@ -2164,9 +2164,9 @@ describe("handleFeishuMessage command authorization", () => {
   ])("delivers post files with caption '$caption' to agent context", async ({ caption, files }) => {
     mockShouldComputeCommandAuthorized.mockReturnValue(false);
     mockDownloadMessageResourceFeishu.mockImplementation(
-      async (params: { originalFilename?: string }) => ({
+      async (params: { fileKey: string; originalFilename?: string }) => ({
         saved: {
-          id: params.originalFilename,
+          id: params.fileKey,
           path: `/tmp/${params.originalFilename}`,
           size: 20,
           contentType: "text/csv",
