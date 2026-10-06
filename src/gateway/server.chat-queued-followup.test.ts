@@ -1,5 +1,15 @@
 import { rawDataToString } from "@openclaw/gateway-client/websocket-data";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  onTestFinished,
+  test,
+  vi,
+} from "vitest";
 import type { WebSocket, RawData } from "ws";
 import { mergeChatStreamMessage } from "../../packages/gateway-client/src/chat-stream-message.js";
 import type { ChatEvent } from "../../packages/gateway-protocol/src/index.js";
@@ -15,6 +25,8 @@ import { drainOpenClawAgentWriteQueuesForTest } from "../state/openclaw-agent-wr
 import { observeGatewayRunExecution } from "./agent-command.test-helpers.js";
 import { flushPendingSessionsChangedEvents } from "./server-methods/session-change-event.js";
 import { createMainChatSessionStoreFixture } from "./server.chat-session-store.test-support.js";
+import * as lifecycleState from "./session-lifecycle-state.js";
+import { createPreparedLifecycleWriteTracker } from "./session-lifecycle-state.test-support.js";
 import {
   dispatchInboundMessageMock,
   installGatewayTestHooks,
@@ -39,9 +51,26 @@ function waitForFast<T>(
 
 describe("queued WebChat follow-up delivery", () => {
   let requestExecution: Awaited<ReturnType<typeof observeGatewayRunExecution>>;
+  let lifecycleWrites: ReturnType<typeof createPreparedLifecycleWriteTracker>;
+  let observedFollowupRunId: string | undefined;
   beforeEach(async () => {
     dispatchInboundMessageMock.mockReset();
     requestExecution = await observeGatewayRunExecution();
+    lifecycleWrites = createPreparedLifecycleWriteTracker();
+    observedFollowupRunId = undefined;
+    const prepareLifecycle = lifecycleState.prepareGatewaySessionLifecycleEvent;
+    const persistenceSpy = vi
+      .spyOn(lifecycleState, "prepareGatewaySessionLifecycleEvent")
+      .mockImplementation((params) => {
+        const persist = prepareLifecycle(params);
+        if (params.event.runId !== observedFollowupRunId) {
+          return persist;
+        }
+        return lifecycleWrites.track(persist);
+      });
+    onTestFinished(() => {
+      persistenceSpy.mockRestore();
+    });
   });
   afterEach(async () => {
     try {
@@ -52,6 +81,8 @@ describe("queued WebChat follow-up delivery", () => {
   });
   const settleGatewayFixture = async () => {
     await requestExecution.waitForCompletion();
+    // Synthetic events lack a request scope; join the producer before draining its writers.
+    await lifecycleWrites.drain();
     await drainOpenClawAgentWriteQueuesForTest();
     await flushPendingSessionsChangedEvents();
     expect(getActiveGatewayRootWorkCount(), getActiveGatewayRootWorkHolders().join(", ")).toBe(0);
@@ -137,6 +168,7 @@ describe("queued WebChat follow-up delivery", () => {
         await sourceFinal;
 
         const followupRunId = `idem-live-webchat-late-followup-${name}`;
+        observedFollowupRunId = followupRunId;
         const terminalFrames: unknown[] = [];
         const deltaFrames: Extract<ChatEvent, { state: "delta" }>[] = [];
         const recordFollowup = (raw: RawData) => {

@@ -25,11 +25,13 @@ import { t } from "../i18n/index.ts";
 import { listSelectableAgents, normalizeAgentLabel } from "../lib/agents/display.ts";
 import type { AgentIdentityCapability } from "../lib/agents/identity.ts";
 import type { GatewayStatus } from "../lib/gateway-status.ts";
+import { isComposingKeyboardEvent } from "../lib/ime.ts";
 import { shouldHandleNavigationClick } from "../lib/navigation-click.ts";
 import { normalizeAgentId } from "../lib/sessions/session-key.ts";
 import { findSettingsSearchBlocks } from "../pages/config/settings-search.ts";
 import { renderGatewayStatus } from "./gateway-status.ts";
 import { icons } from "./icons.ts";
+import { renderKbd } from "./kbd.ts";
 import type { SettingsSaveIndicatorProps } from "./settings-save-indicator.ts";
 import "./agent-select-registration.ts";
 import "./settings-save-indicator.ts";
@@ -397,7 +399,7 @@ export function renderSettingsSidebar(props: SettingsSidebarProps) {
         <button type="button" class="settings-sidebar__back" @click=${() => props.onExit()}>
           <span class="settings-sidebar__back-icon" aria-hidden="true">${icons.arrowLeft}</span>
           ${t("nav.exitSettings")}
-          <kbd class="settings-sidebar__esc" aria-hidden="true">esc</kbd>
+          ${renderKbd("esc", { className: "settings-sidebar__esc", ariaHidden: true })}
         </button>
         <h1 class="settings-sidebar__title">${t("nav.settings")}</h1>
       </header>
@@ -415,7 +417,7 @@ export function renderSettingsSidebar(props: SettingsSidebarProps) {
           @input=${(event: Event) =>
             props.onSearchQueryChange((event.currentTarget as HTMLInputElement).value)}
           @keydown=${(event: KeyboardEvent) => {
-            if (event.key !== "Escape") {
+            if (event.key !== "Escape" || isComposingKeyboardEvent(event)) {
               return;
             }
             event.preventDefault();

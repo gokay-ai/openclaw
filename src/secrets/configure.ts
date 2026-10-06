@@ -13,7 +13,6 @@ import { listAgentIds, resolveAgentDir, resolveDefaultAgentId } from "../agents/
 import { AUTH_STORE_VERSION } from "../agents/auth-profiles/constants.js";
 import { loadPersistedAuthProfileStore } from "../agents/auth-profiles/persisted.js";
 import { readPersistedSharedAuthProfileStoreRaw } from "../agents/auth-profiles/sqlite.js";
-import type { AuthProfileStore } from "../agents/auth-profiles/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   coerceSecretRef,
@@ -39,10 +38,7 @@ import {
 import { getSkippedExecRefStaticError } from "./exec-resolution-policy.js";
 import type { SecretsApplyPlan } from "./plan.js";
 import { getProviderEnvVarsCore } from "./provider-env-vars.js";
-import {
-  listSecretProviderIntegrationPresets,
-  type SecretProviderIntegrationPreset,
-} from "./provider-integrations.js";
+import { listSecretProviderIntegrationPresets } from "./provider-integrations.js";
 import {
   formatExecSecretRefIdValidationMessage,
   isValidExecSecretRefId,
@@ -85,27 +81,18 @@ function parseOptionalPositiveInt(value: string, max: number): number | undefine
   return parsed;
 }
 
-function getSecretProviders(config: OpenClawConfig): Record<string, SecretProviderConfig> {
-  if (!isRecord(config.secrets?.providers)) {
-    return {};
-  }
-  return config.secrets.providers;
-}
-
 function setSecretProvider(
   config: OpenClawConfig,
   providerAlias: string,
   providerConfig: SecretProviderConfig,
 ): void {
   config.secrets ??= {};
-  if (!isRecord(config.secrets.providers)) {
-    config.secrets.providers = {};
-  }
+  config.secrets.providers ??= {};
   config.secrets.providers[providerAlias] = providerConfig;
 }
 
 function removeSecretProvider(config: OpenClawConfig, providerAlias: string): boolean {
-  if (!isRecord(config.secrets?.providers)) {
+  if (!config.secrets?.providers) {
     return false;
   }
   const providers = config.secrets.providers;
@@ -114,31 +101,19 @@ function removeSecretProvider(config: OpenClawConfig, providerAlias: string): bo
   }
   delete providers[providerAlias];
   if (Object.keys(providers).length === 0) {
-    delete config.secrets?.providers;
+    delete config.secrets.providers;
   }
 
-  if (isRecord(config.secrets?.defaults)) {
+  if (config.secrets.defaults) {
     const defaults = config.secrets.defaults;
-    if (defaults?.env === providerAlias) {
-      delete defaults.env;
+    const sources = ["env", "file", "exec", "store"] as const;
+    for (const source of sources) {
+      if (defaults[source] === providerAlias) {
+        delete defaults[source];
+      }
     }
-    if (defaults?.file === providerAlias) {
-      delete defaults.file;
-    }
-    if (defaults?.exec === providerAlias) {
-      delete defaults.exec;
-    }
-    if (defaults?.store === providerAlias) {
-      delete defaults.store;
-    }
-    if (
-      defaults &&
-      defaults.env === undefined &&
-      defaults.file === undefined &&
-      defaults.exec === undefined &&
-      defaults.store === undefined
-    ) {
-      delete config.secrets?.defaults;
+    if (sources.every((source) => defaults[source] === undefined)) {
+      delete config.secrets.defaults;
     }
   }
   return true;
@@ -161,32 +136,9 @@ function providerHint(provider: SecretProviderConfig): string {
   return `exec (${provider.jsonOnly === false ? "json+text" : "json"})`;
 }
 
-function providerPresetKey(preset: SecretProviderIntegrationPreset): string {
-  return `${preset.pluginId}:${preset.id}:${preset.providerAlias}`;
-}
-
-function providerPresetHint(preset: SecretProviderIntegrationPreset): string {
-  return `${preset.providerAlias} | ${preset.pluginId}:${preset.id} | exec plugin`;
-}
-
-function loadSecretProviderIntegrationPresets(params: {
-  config: OpenClawConfig;
-  env: NodeJS.ProcessEnv;
-}): SecretProviderIntegrationPreset[] {
-  const manifestRegistry = loadPluginManifestRegistryCore({
-    config: params.config,
-    env: params.env,
-  });
-  return listSecretProviderIntegrationPresets({
-    manifestRegistry,
-    config: params.config,
-    env: params.env,
-  });
-}
-
 function toSourceChoices(config: OpenClawConfig): Array<{ value: SecretRefSource; label: string }> {
   const hasSource = (source: SecretRefSource) =>
-    Object.values(config.secrets?.providers ?? {}).some((provider) => provider?.source === source);
+    Object.values(config.secrets?.providers ?? {}).some((provider) => provider.source === source);
   const choices: Array<{ value: SecretRefSource; label: string }> = [
     {
       value: "env",
@@ -203,11 +155,28 @@ function toSourceChoices(config: OpenClawConfig): Array<{ value: SecretRefSource
   return choices;
 }
 
-function assertNoCancel<T>(value: T | typeof CANCEL_SYMBOL, message: string): T {
+function assertNoCancel<T>(value: T | typeof CANCEL_SYMBOL): T {
   if (typeof value === "symbol") {
-    throw new Error(message);
+    throw new Error("Secrets configure cancelled.");
   }
   return value;
+}
+
+async function promptRequiredText(params: {
+  message: string;
+  initialValue?: string;
+  validate?: (value: string) => string | undefined;
+}): Promise<string> {
+  const enteredValue = assertNoCancel(
+    await text({
+      ...params,
+      validate: (value) => {
+        const trimmed = value?.trim() ?? "";
+        return trimmed ? params.validate?.(trimmed) : "Required";
+      },
+    }),
+  );
+  return enteredValue.trim();
 }
 
 const AUTH_PROFILE_ID_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/;
@@ -232,9 +201,8 @@ async function promptEnvNameCsv(params: {
       initialValue: params.initialValue,
       validate: (value) => validateEnvNameCsv(value ?? ""),
     }),
-    "Secrets configure cancelled.",
   );
-  return normalizeCsvOrLooseStringList(raw ?? "");
+  return normalizeCsvOrLooseStringList(raw);
 }
 
 async function promptOptionalPositiveInt(params: {
@@ -258,13 +226,8 @@ async function promptOptionalPositiveInt(params: {
         return undefined;
       },
     }),
-    "Secrets configure cancelled.",
   );
-  const parsed = parseOptionalPositiveInt(
-    normalizeStringifiedOptionalString(raw) ?? "",
-    params.max,
-  );
-  return parsed;
+  return parseOptionalPositiveInt(raw, params.max);
 }
 
 function configureCandidateKey(candidate: {
@@ -278,30 +241,14 @@ function configureCandidateKey(candidate: {
   return `openclaw:${candidate.path}`;
 }
 
-function hasSourceChoice(
-  sourceChoices: Array<{ value: SecretRefSource; label: string }>,
-  source: SecretRefSource,
-): boolean {
-  return sourceChoices.some((entry) => entry.value === source);
-}
-
-function resolveCandidateProviderHint(candidate: ConfigureCandidate): string | undefined {
-  return (
-    normalizeOptionalLowercaseString(candidate.authProfileProvider) ??
-    normalizeOptionalLowercaseString(candidate.providerId)
-  );
-}
-
 function resolveSuggestedEnvSecretId(candidate: ConfigureCandidate): string | undefined {
-  const hintedProvider = resolveCandidateProviderHint(candidate);
+  const hintedProvider =
+    normalizeOptionalLowercaseString(candidate.authProfileProvider) ??
+    normalizeOptionalLowercaseString(candidate.providerId);
   if (!hintedProvider) {
     return undefined;
   }
-  const envCandidates = getProviderEnvVarsCore(hintedProvider);
-  if (!Array.isArray(envCandidates) || envCandidates.length === 0) {
-    return undefined;
-  }
-  return envCandidates[0];
+  return getProviderEnvVarsCore(hintedProvider)[0];
 }
 
 function resolveConfigureAgentId(config: OpenClawConfig, explicitAgentId?: string): string {
@@ -316,19 +263,6 @@ function resolveConfigureAgentId(config: OpenClawConfig, explicitAgentId?: strin
   const known = [...knownAgentIds].toSorted().join(", ");
   throw new Error(
     `Unknown agent id "${explicitAgentId}". Known agents: ${known || "none configured"}.`,
-  );
-}
-
-function loadAuthProfileStoreForConfigure(params: {
-  config: OpenClawConfig;
-  agentId: string;
-}): AuthProfileStore {
-  const agentDir = resolveAgentDir(params.config, params.agentId);
-  return (
-    loadPersistedAuthProfileStore(agentDir) ?? {
-      version: AUTH_STORE_VERSION,
-      profiles: {},
-    }
   );
 }
 
@@ -366,22 +300,11 @@ function countSharedAuthProfilePlaintext(env: NodeJS.ProcessEnv): number {
 }
 
 async function promptNewAuthProfileCandidate(agentId: string): Promise<ConfigureCandidate> {
-  const profileId = assertNoCancel(
-    await text({
-      message: "Auth profile id",
-      validate: (value) => {
-        const trimmed = normalizeStringifiedOptionalString(value) ?? "";
-        if (!trimmed) {
-          return "Required";
-        }
-        if (!AUTH_PROFILE_ID_PATTERN.test(trimmed)) {
-          return 'Use letters/numbers/":"/"_"/"-" only.';
-        }
-        return undefined;
-      },
-    }),
-    "Secrets configure cancelled.",
-  );
+  const profileId = await promptRequiredText({
+    message: "Auth profile id",
+    validate: (value) =>
+      AUTH_PROFILE_ID_PATTERN.test(value) ? undefined : 'Use letters/numbers/":"/"_"/"-" only.',
+  });
 
   const credentialType = assertNoCancel(
     await select({
@@ -391,59 +314,39 @@ async function promptNewAuthProfileCandidate(agentId: string): Promise<Configure
         { value: "token", label: "token (token/tokenRef)" },
       ],
     }),
-    "Secrets configure cancelled.",
   );
 
-  const provider = assertNoCancel(
-    await text({
-      message: "Provider id",
-      validate: (value) => (normalizeStringifiedOptionalString(value) ? undefined : "Required"),
-    }),
-    "Secrets configure cancelled.",
-  );
+  const provider = await promptRequiredText({ message: "Provider id" });
 
-  const profileIdTrimmed = normalizeStringifiedOptionalString(profileId) ?? "";
-  const providerTrimmed = normalizeStringifiedOptionalString(provider) ?? "";
   const field = credentialType === "token" ? "token" : "key";
   return {
     type: credentialType === "token" ? "auth-profiles.token.token" : "auth-profiles.api_key.key",
-    path: `profiles.${profileIdTrimmed}.${field}`,
-    pathSegments: ["profiles", profileIdTrimmed, field],
-    label: `profiles.${profileIdTrimmed}.${field} (auth profile, agent ${agentId})`,
+    path: `profiles.${profileId}.${field}`,
+    pathSegments: ["profiles", profileId, field],
+    label: `profiles.${profileId}.${field} (auth profile, agent ${agentId})`,
     configFile: "auth-profile-store",
     agentId,
-    authProfileProvider: providerTrimmed,
+    authProfileProvider: provider,
     expectedResolvedValue: "string",
   };
 }
 
 async function promptProviderAlias(params: { existingAliases: Set<string> }): Promise<string> {
-  const alias = assertNoCancel(
-    await text({
-      message: "Provider alias",
-      initialValue: "default",
-      validate: (value) => {
-        const trimmed = normalizeStringifiedOptionalString(value) ?? "";
-        if (!trimmed) {
-          return "Required";
-        }
-        if (!isValidSecretProviderAlias(trimmed)) {
-          return "Must match /^[a-z][a-z0-9_-]{0,63}$/";
-        }
-        if (params.existingAliases.has(trimmed)) {
-          return "Alias already exists";
-        }
-        return undefined;
-      },
-    }),
-    "Secrets configure cancelled.",
-  );
-  return normalizeStringifiedOptionalString(alias) ?? "";
+  return await promptRequiredText({
+    message: "Provider alias",
+    initialValue: "default",
+    validate: (value) => {
+      if (!isValidSecretProviderAlias(value)) {
+        return "Must match /^[a-z][a-z0-9_-]{0,63}$/";
+      }
+      return params.existingAliases.has(value) ? "Alias already exists" : undefined;
+    },
+  });
 }
 
 async function promptProviderSource(initial?: SecretRefSource): Promise<SecretRefSource> {
-  const source = assertNoCancel(
-    await select({
+  return assertNoCancel(
+    await select<SecretRefSource>({
       message: "Provider source",
       options: [
         { value: "env", label: "env" },
@@ -453,9 +356,7 @@ async function promptProviderSource(initial?: SecretRefSource): Promise<SecretRe
       ],
       initialValue: initial,
     }),
-    "Secrets configure cancelled.",
   );
-  return source as SecretRefSource;
 }
 
 async function promptEnvProvider(
@@ -474,23 +375,11 @@ async function promptEnvProvider(
 async function promptFileProvider(
   base?: Extract<SecretProviderConfig, { source: "file" }>,
 ): Promise<Extract<SecretProviderConfig, { source: "file" }>> {
-  const filePath = assertNoCancel(
-    await text({
-      message: "File path (absolute)",
-      initialValue: base?.path ?? "",
-      validate: (value) => {
-        const trimmed = normalizeStringifiedOptionalString(value) ?? "";
-        if (!trimmed) {
-          return "Required";
-        }
-        if (!isAbsolutePathValue(trimmed)) {
-          return "Must be an absolute path";
-        }
-        return undefined;
-      },
-    }),
-    "Secrets configure cancelled.",
-  );
+  const filePath = await promptRequiredText({
+    message: "File path (absolute)",
+    initialValue: base?.path ?? "",
+    validate: (value) => (isAbsolutePathValue(value) ? undefined : "Must be an absolute path"),
+  });
 
   const mode = assertNoCancel(
     await select({
@@ -501,7 +390,6 @@ async function promptFileProvider(
       ],
       initialValue: base?.mode ?? "json",
     }),
-    "Secrets configure cancelled.",
   );
 
   const timeoutMs = await promptOptionalPositiveInt({
@@ -516,7 +404,7 @@ async function promptFileProvider(
   });
   return {
     source: "file",
-    path: normalizeStringifiedOptionalString(filePath) ?? "",
+    path: filePath,
     mode,
     ...(timeoutMs ? { timeoutMs } : {}),
     ...(maxBytes ? { maxBytes } : {}),
@@ -538,26 +426,16 @@ async function parseArgsInput(rawValue: string): Promise<string[] | undefined> {
 async function promptExecProvider(
   base?: ManualExecSecretProviderConfig,
 ): Promise<ManualExecSecretProviderConfig> {
-  const command = assertNoCancel(
-    await text({
-      message: "Command path (absolute)",
-      initialValue: base?.command ?? "",
-      validate: (value) => {
-        const trimmed = normalizeStringifiedOptionalString(value) ?? "";
-        if (!trimmed) {
-          return "Required";
-        }
-        if (!isAbsolutePathValue(trimmed)) {
-          return "Must be an absolute path";
-        }
-        if (!isSafeExecutableValue(trimmed)) {
-          return "Command value is not allowed";
-        }
-        return undefined;
-      },
-    }),
-    "Secrets configure cancelled.",
-  );
+  const command = await promptRequiredText({
+    message: "Command path (absolute)",
+    initialValue: base?.command ?? "",
+    validate: (value) => {
+      if (!isAbsolutePathValue(value)) {
+        return "Must be an absolute path";
+      }
+      return isSafeExecutableValue(value) ? undefined : "Command value is not allowed";
+    },
+  });
 
   const argsRaw = assertNoCancel(
     await text({
@@ -579,7 +457,6 @@ async function promptExecProvider(
         }
       },
     }),
-    "Secrets configure cancelled.",
   );
 
   const timeoutMs = await promptOptionalPositiveInt({
@@ -605,7 +482,6 @@ async function promptExecProvider(
       message: "Require JSON-only response?",
       initialValue: base?.jsonOnly ?? true,
     }),
-    "Secrets configure cancelled.",
   );
 
   const passEnv = await promptEnvNameCsv({
@@ -627,23 +503,22 @@ async function promptExecProvider(
         return undefined;
       },
     }),
-    "Secrets configure cancelled.",
   );
 
-  const args = await parseArgsInput(normalizeStringifiedOptionalString(argsRaw) ?? "");
-  const trustedDirs = normalizeCsvOrLooseStringList(trustedDirsRaw ?? "");
+  const args = await parseArgsInput(argsRaw);
+  const trustedDirs = normalizeCsvOrLooseStringList(trustedDirsRaw);
 
   return {
     source: "exec",
-    command: normalizeStringifiedOptionalString(command) ?? "",
+    command,
     ...(args && args.length > 0 ? { args } : {}),
     ...(timeoutMs ? { timeoutMs } : {}),
     ...(noOutputTimeoutMs ? { noOutputTimeoutMs } : {}),
     ...(maxOutputBytes ? { maxOutputBytes } : {}),
-    ...(jsonOnly ? { jsonOnly } : { jsonOnly: false }),
+    jsonOnly,
     ...(passEnv.length > 0 ? { passEnv } : {}),
     ...(trustedDirs.length > 0 ? { trustedDirs } : {}),
-    ...(isRecord(base?.env) ? { env: base.env } : {}),
+    ...(base?.env ? { env: base.env } : {}),
   };
 }
 
@@ -669,9 +544,10 @@ async function configureProvidersInteractive(
   config: OpenClawConfig,
   env: NodeJS.ProcessEnv,
 ): Promise<void> {
-  const presets = loadSecretProviderIntegrationPresets({ config, env });
+  const manifestRegistry = loadPluginManifestRegistryCore({ config, env });
+  const presets = listSecretProviderIntegrationPresets({ manifestRegistry, config, env });
   while (true) {
-    const providers = getSecretProviders(config);
+    const providers = config.secrets?.providers ?? {};
     const providerEntries = Object.entries(providers).toSorted(([left], [right]) =>
       left.localeCompare(right),
     );
@@ -720,7 +596,6 @@ async function configureProvidersInteractive(
             : "Configure secret providers (env/store refs are built in; add file/exec providers as needed)",
         options: actionOptions,
       }),
-      "Secrets configure cancelled.",
     );
 
     if (action === "continue") {
@@ -738,21 +613,16 @@ async function configureProvidersInteractive(
     }
 
     if (action === "preset") {
-      const selectedPresetKey = assertNoCancel(
+      const preset = assertNoCancel(
         await select({
           message: "Select plugin preset",
-          options: presetEntries.map((preset) => ({
-            value: providerPresetKey(preset),
-            label: preset.displayName,
-            hint: providerPresetHint(preset),
+          options: presetEntries.map((entry) => ({
+            value: entry,
+            label: entry.displayName,
+            hint: `${entry.providerAlias} | ${entry.pluginId}:${entry.id} | exec plugin`,
           })),
         }),
-        "Secrets configure cancelled.",
       );
-      const preset = presetEntries.find((entry) => providerPresetKey(entry) === selectedPresetKey);
-      if (!preset) {
-        throw new Error(`Unknown secret provider preset: ${selectedPresetKey}`);
-      }
       const current = providers[preset.providerAlias];
       if (current) {
         const shouldReplace = assertNoCancel(
@@ -760,7 +630,6 @@ async function configureProvidersInteractive(
             message: `Replace provider "${preset.providerAlias}" with the ${preset.displayName} preset?`,
             initialValue: false,
           }),
-          "Secrets configure cancelled.",
         );
         if (!shouldReplace) {
           continue;
@@ -771,22 +640,17 @@ async function configureProvidersInteractive(
     }
 
     if (action === "edit" || action === "remove") {
-      const alias = assertNoCancel(
+      const { alias, provider: current } = assertNoCancel(
         await select({
           message: action === "edit" ? "Select provider to edit" : "Select provider to remove",
           options: providerEntries.map(([providerAlias, providerConfig]) => ({
-            value: providerAlias,
+            value: { alias: providerAlias, provider: providerConfig },
             label: providerAlias,
             hint: providerHint(providerConfig),
           })),
         }),
-        "Secrets configure cancelled.",
       );
       if (action === "edit") {
-        const current = providers[alias];
-        if (!current) {
-          continue;
-        }
         const source = await promptProviderSource(current.source);
         const nextProviderConfig = await promptProviderConfig(source, current);
         if (!isDeepStrictEqual(current, nextProviderConfig)) {
@@ -799,7 +663,6 @@ async function configureProvidersInteractive(
           message: `Remove provider "${alias}"?`,
           initialValue: false,
         }),
-        "Secrets configure cancelled.",
       );
       if (shouldRemove) {
         removeSecretProvider(config, alias);
@@ -846,10 +709,11 @@ export async function runSecretsConfigureInteractive(
   const selectedByPath = new Map<string, ConfigureCandidate & { ref: SecretRef }>();
   if (!params.providersOnly) {
     const configureAgentId = resolveConfigureAgentId(snapshot.config, params.agentId);
-    const authStore = loadAuthProfileStoreForConfigure({
-      config: snapshot.config,
-      agentId: configureAgentId,
-    });
+    const agentDir = resolveAgentDir(snapshot.config, configureAgentId);
+    const authStore = loadPersistedAuthProfileStore(agentDir) ?? {
+      version: AUTH_STORE_VERSION,
+      profiles: {},
+    };
     const candidates = buildConfigureCandidatesForScope({
       config: stagedConfig,
       authoredOpenClawConfig: snapshot.resolved,
@@ -884,8 +748,12 @@ export async function runSecretsConfigureInteractive(
       const visibleCandidates = showDerivedCandidates
         ? candidates
         : candidates.filter((candidate) => candidate.isDerived !== true);
-      const options = visibleCandidates.map((candidate) => ({
-        value: configureCandidateKey(candidate),
+      const options: Array<{
+        value: ConfigureCandidate | "__create_auth_profile__" | "__toggle_derived__" | "__done__";
+        label: string;
+        hint: string;
+      }> = visibleCandidates.map((candidate) => ({
+        value: candidate,
         label: candidate.label,
         hint: [
           // Auth profiles live in the agent's SQLite store; naming the retired
@@ -918,18 +786,17 @@ export async function runSecretsConfigureInteractive(
         });
       }
 
-      const selectedPath = assertNoCancel(
+      const candidate = assertNoCancel(
         await select({
           message: "Select credential field",
           options,
         }),
-        "Secrets configure cancelled.",
       );
 
-      if (selectedPath === "__done__") {
+      if (candidate === "__done__") {
         break;
       }
-      if (selectedPath === "__create_auth_profile__") {
+      if (candidate === "__create_auth_profile__") {
         const createdCandidate = await promptNewAuthProfileCandidate(configureAgentId);
         const key = configureCandidateKey(createdCandidate);
         const existingIndex = candidates.findIndex((entry) => configureCandidateKey(entry) === key);
@@ -940,22 +807,16 @@ export async function runSecretsConfigureInteractive(
         }
         continue;
       }
-      if (selectedPath === "__toggle_derived__") {
+      if (candidate === "__toggle_derived__") {
         showDerivedCandidates = !showDerivedCandidates;
         continue;
       }
 
-      const candidate = visibleCandidates.find(
-        (entry) => configureCandidateKey(entry) === selectedPath,
-      );
-      if (!candidate) {
-        throw new Error(`Unknown configure target: ${selectedPath}`);
-      }
       const candidateKey = configureCandidateKey(candidate);
       const priorSelection = selectedByPath.get(candidateKey);
       const existingRef = priorSelection?.ref ?? candidate.existingRef;
       const sourceInitialValue =
-        existingRef && hasSourceChoice(sourceChoices, existingRef.source)
+        existingRef && sourceChoices.some((entry) => entry.value === existingRef.source)
           ? existingRef.source
           : undefined;
 
@@ -965,32 +826,19 @@ export async function runSecretsConfigureInteractive(
           options: sourceChoices,
           initialValue: sourceInitialValue,
         }),
-        "Secrets configure cancelled.",
-      ) as SecretRefSource;
+      );
 
       const defaultAlias = resolveDefaultSecretProviderAlias(stagedConfig, source, {
         preferFirstProviderForSource: true,
       });
       const providerInitialValue =
         existingRef?.source === source ? existingRef.provider : defaultAlias;
-      const provider = assertNoCancel(
-        await text({
-          message: "Provider alias",
-          initialValue: providerInitialValue,
-          validate: (value) => {
-            const trimmed = normalizeStringifiedOptionalString(value) ?? "";
-            if (!trimmed) {
-              return "Required";
-            }
-            if (!isValidSecretProviderAlias(trimmed)) {
-              return "Must match /^[a-z][a-z0-9_-]{0,63}$/";
-            }
-            return undefined;
-          },
-        }),
-        "Secrets configure cancelled.",
-      );
-      const providerAlias = normalizeStringifiedOptionalString(provider) ?? "";
+      const providerAlias = await promptRequiredText({
+        message: "Provider alias",
+        initialValue: providerInitialValue,
+        validate: (value) =>
+          isValidSecretProviderAlias(value) ? undefined : "Must match /^[a-z][a-z0-9_-]{0,63}$/",
+      });
       const suggestedIdFromExistingRef =
         existingRef?.source === source ? existingRef.id : undefined;
       let suggestedId = suggestedIdFromExistingRef;
@@ -1003,30 +851,22 @@ export async function runSecretsConfigureInteractive(
           suggestedId = "value";
         }
       }
-      const id = assertNoCancel(
-        await text({
-          message: "Secret id",
-          initialValue: suggestedId,
-          validate: (value) => {
-            const trimmed = normalizeStringifiedOptionalString(value) ?? "";
-            if (!trimmed) {
-              return "Required";
-            }
-            if ((source === "env" || source === "store") && !isValidEnvSecretRefId(trimmed)) {
-              return `${source} ids must match /^[A-Z][A-Z0-9_]{0,127}$/`;
-            }
-            if (source === "exec" && !isValidExecSecretRefId(trimmed)) {
-              return formatExecSecretRefIdValidationMessage();
-            }
-            return undefined;
-          },
-        }),
-        "Secrets configure cancelled.",
-      );
+      const id = await promptRequiredText({
+        message: "Secret id",
+        initialValue: suggestedId,
+        validate: (value) => {
+          if ((source === "env" || source === "store") && !isValidEnvSecretRefId(value)) {
+            return `${source} ids must match /^[A-Z][A-Z0-9_]{0,127}$/`;
+          }
+          return source === "exec" && !isValidExecSecretRefId(value)
+            ? formatExecSecretRefIdValidationMessage()
+            : undefined;
+        },
+      });
       const ref: SecretRef = {
         source,
         provider: providerAlias,
-        id: normalizeStringifiedOptionalString(id) ?? "",
+        id,
       };
       if (ref.source === "exec" && !allowExecInPreflight) {
         const staticError = getSkippedExecRefStaticError({
@@ -1062,7 +902,6 @@ export async function runSecretsConfigureInteractive(
           message: "Configure another credential?",
           initialValue: true,
         }),
-        "Secrets configure cancelled.",
       );
       if (!addMore) {
         break;
