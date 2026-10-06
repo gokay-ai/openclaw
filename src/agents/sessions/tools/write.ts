@@ -1,8 +1,3 @@
-/**
- * Built-in write session tool.
- *
- * Writes files through queued local or injected operations with readback/idempotency metadata.
- */
 import {
   mkdir as fsMkdir,
   readFile as fsReadFile,
@@ -15,7 +10,7 @@ import { isMissingPathError } from "../../../infra/errors.js";
 import { captureAgentToolSourceExecutionGuard } from "../../agent-tool-source-execution-guard.js";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { getLanguageFromPath, highlightCode } from "../../modes/interactive/theme/theme.js";
-import type { AgentTool } from "../../runtime/index.js";
+import type { AgentTool, AgentToolResult } from "../../runtime/index.js";
 import { textResult } from "../../tools/tool-results.js";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
 import { WRITE_DIFF_MAX_BYTES } from "./file-diff.js";
@@ -43,7 +38,7 @@ import { writeSchema, WriteToolOutputSchema } from "./tool-schemas.js";
  * Pluggable operations for the write tool.
  * Override these to delegate file writing to remote systems (for example SSH).
  */
-export interface WriteOperations {
+interface WriteOperations {
   /** Resolve the physical identity used to order this backend's file operations. */
   resolveQueueKey?: (absolutePath: string, signal?: AbortSignal) => string | Promise<string>;
   /** Write content to a file */
@@ -219,18 +214,11 @@ function formatWriteCall(
 }
 
 function formatWriteResult(
-  result: {
-    content: Array<{
-      type: string;
-      text?: string;
-      data?: string;
-      mimeType?: string;
-    }>;
-    isError?: boolean;
-  },
+  result: AgentToolResult<WriteToolDetails>,
   theme: typeof import("../../modes/interactive/theme/theme.js").interactiveAgentTheme,
+  isError: boolean,
 ): string | undefined {
-  if (!result.isError) {
+  if (!isError) {
     return undefined;
   }
   const output = result.content
@@ -375,31 +363,7 @@ function successfulWriteResult(path: string, content: string, details: WriteTool
   );
 }
 
-async function recoverSuccessfulWrite(params: {
-  absolutePath: string;
-  content: string;
-  error: unknown;
-  ops: WriteOperations;
-  path: string;
-  precheck: WriteToolPrecheck;
-  details: WriteToolDetails;
-  signal?: AbortSignal;
-}) {
-  if (!isWriteRecoveryCandidate(params.error, params.signal)) {
-    return null;
-  }
-  const verified = await verifyPersistedUtf8File(params.absolutePath, params.content, params.ops);
-  const changed =
-    params.precheck.state === "different" ||
-    (params.precheck.state === "unknown" &&
-      (await didWriteMetadataChange(params.absolutePath, params.precheck.beforeStat, params.ops)));
-  if (!verified || !changed) {
-    return null;
-  }
-  return successfulWriteResult(params.path, params.content, params.details);
-}
-
-export function createWriteToolDefinition(
+function createWriteToolDefinition(
   cwd: string,
   options?: WriteToolOptions,
 ): ToolDefinition<typeof writeSchema, WriteToolDetails> {
@@ -464,19 +428,16 @@ export function createWriteToolDefinition(
           return successfulWriteResult(path, content, details);
         } catch (error: unknown) {
           assertCurrent();
-          const recovered = await recoverSuccessfulWrite({
-            absolutePath,
-            content,
-            error,
-            ops,
-            path,
-            precheck,
-            details,
-            signal,
-          });
-          if (recovered) {
-            assertCurrent();
-            return recovered;
+          if (isWriteRecoveryCandidate(error, signal)) {
+            const verified = await verifyPersistedUtf8File(absolutePath, content, ops);
+            const changed =
+              precheck.state === "different" ||
+              (precheck.state === "unknown" &&
+                (await didWriteMetadataChange(absolutePath, precheck.beforeStat, ops)));
+            if (verified && changed) {
+              assertCurrent();
+              return successfulWriteResult(path, content, details);
+            }
           }
           throw error;
         }
@@ -498,19 +459,12 @@ export function createWriteToolDefinition(
       } else {
         component.cache = undefined;
       }
-      component.setText(
-        formatWriteCall(
-          renderArgs,
-          { expanded: context.expanded, isPartial: context.isPartial },
-          theme,
-          component.cache,
-        ),
-      );
+      component.setText(formatWriteCall(renderArgs, context, theme, component.cache));
       return component;
     },
     renderResult(result, optionsLocal, theme, context) {
       void optionsLocal;
-      const output = formatWriteResult({ ...result, isError: context.isError }, theme);
+      const output = formatWriteResult(result, theme, context.isError);
       if (!output) {
         const component = (context.lastComponent as Container | undefined) ?? new Container();
         component.clear();

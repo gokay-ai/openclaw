@@ -4,6 +4,11 @@ import { parseGithubResponse } from "./gh-api-preflight.mjs";
 import { execPrGh, execPrGhJson } from "./github.mjs";
 
 const OID = /^[0-9a-f]{40}$/;
+// REST values normalize into GitHub's MergeStateStatus enum, never arbitrary admission states.
+// https://docs.github.com/en/graphql/reference/pulls#mergestatestatus
+const MERGE_STATES = new Set(
+  "behind blocked clean dirty draft has_hooks unknown unstable".split(" "),
+);
 const RULE_TYPES = new Set([
   "deletion",
   "non_fast_forward",
@@ -113,6 +118,10 @@ export function readMergePolicy(repo) {
     // stderr, inaccessible repositories, and generic 404s do not prove absence.
     response = String(error.stdout ?? "");
     const parsed = parseGithubResponse(response);
+    requireEvidence(
+      !(parsed.status === "404" && parsed.body?.message === "Not Found"),
+      "classic branch-protection policy is unavailable to this writer; a generic 404 or hidden GraphQL rule cannot prove absence",
+    );
     if (parsed.status !== "404" || parsed.body?.message !== "Branch not protected") {
       throw error;
     }
@@ -173,7 +182,7 @@ function readPullRequest(repo, authority, pr) {
       typeof record.merged === "boolean" &&
       typeof record.draft === "boolean" &&
       [true, false, null].includes(record.mergeable) &&
-      nonemptyString(record.mergeable_state) &&
+      MERGE_STATES.has(record.mergeable_state) &&
       Object.hasOwn(record, "auto_merge") &&
       (record.auto_merge === null ||
         ["squash", "merge", "rebase"].includes(record.auto_merge?.merge_method)),
@@ -212,7 +221,8 @@ function pullRequest(record) {
   };
 }
 
-function beginRead(repo, pr, observe) {
+function beginRead(repo, pr, observe, priorCiObservation) {
+  const startedAtMs = Date.now();
   // Included headers select the protected writer route, so pooled-reader
   // permissions cannot establish the actor's access to branch policy.
   const response = parseGithubResponse(
@@ -234,14 +244,16 @@ function beginRead(repo, pr, observe) {
   // reduced privileges cannot invalidate the retained head and tree proof.
   const receipt = observe && record.merged;
   requireRestSupport(
-    receipt || authority.permissions?.admin === true,
+    receipt ||
+      authority.permissions?.admin === true ||
+      (priorCiObservation && authority.permissions?.push === true),
     "policy-reader admin access changed",
   );
   const policy = receipt ? null : readMergePolicy(repo);
-  return { authority, main: mainSha, record, policy };
+  return { authority, main: mainSha, record, policy, startedAtMs };
 }
 
-function finishRead(repo, pr, snapshot, requireStableMain) {
+function finishRead(repo, pr, snapshot, requireStableMain, priorCiObservation) {
   const current = readPullRequest(repo, snapshot.authority, pr);
   const identity = (record) => {
     const {
@@ -251,15 +263,37 @@ function finishRead(repo, pr, snapshot, requireStableMain) {
     } = pullRequest(record);
     return facts;
   };
-  requireEvidence(
-    JSON.stringify(identity(current)) === JSON.stringify(identity(snapshot.record)),
-    "PR identity, head, or lifecycle changed while reading evidence",
-  );
+  const sameIdentity =
+    JSON.stringify(identity(current)) === JSON.stringify(identity(snapshot.record));
+  const { requiredChecks: _checks, ...policy } = snapshot.policy ?? {};
+  const samePolicy =
+    !priorCiObservation ||
+    current.merged ||
+    JSON.stringify(readMergePolicy(repo)) === JSON.stringify(policy);
   const mainSha = readMain(repo);
+  if (priorCiObservation || mainSha !== snapshot.main || !sameIdentity || !samePolicy) {
+    const finishedAtMs = Date.now();
+    console.error(
+      `REST merge observation: ${JSON.stringify({
+        transport: "rest",
+        requestedGhRoute: "plain",
+        observedGhRoute: "unrecorded",
+        requestedCacheControl: "max-age=0",
+        mainBefore: snapshot.main,
+        mainAfter: mainSha,
+        startedAtMs: snapshot.startedAtMs,
+        finishedAtMs,
+        elapsedMs: finishedAtMs - snapshot.startedAtMs,
+      })}`,
+    );
+  }
+  requireEvidence(sameIdentity, "PR identity, head, or lifecycle changed while reading evidence");
+  requireEvidence(samePolicy, "branch policy changed while reading evidence");
   requireEvidence(
     !requireStableMain || current.merged || mainSha === snapshot.main,
     "main changed while reading evidence",
   );
+  snapshot.mainBefore = snapshot.main;
   snapshot.main = mainSha;
   return current;
 }
@@ -557,8 +591,10 @@ function mergeBody(value) {
 }
 
 function main([mode, repository, prValue, head, bodySnapshot, expectedObservation, ...extra]) {
+  const observing = ["observe", "observe-admission", "observe-prior-ci"].includes(mode);
+  const priorCiObservation = mode === "observe-prior-ci";
   requireEvidence(
-    ["observe", "observe-admission", "checks", "preview", "merge"].includes(mode) &&
+    (observing || ["checks", "preview", "merge"].includes(mode)) &&
       /^[1-9][0-9]*$/.test(prValue ?? "") &&
       Number.isSafeInteger(Number(prValue)) &&
       extra.length === 0 &&
@@ -571,22 +607,27 @@ function main([mode, repository, prValue, head, bodySnapshot, expectedObservatio
   );
   const repo = parseRepository(repository);
   const pr = Number(prValue);
-  const observing = mode === "observe" || mode === "observe-admission";
   const body = mode === "merge" ? mergeBody(bodySnapshot) : undefined;
-  const snapshot = beginRead(repo, pr, observing);
+  const snapshot = beginRead(repo, pr, observing, priorCiObservation);
   const checks =
     mode === "checks" || ((observing || mode === "merge") && snapshot.record.state === "open")
       ? readRequiredMergeChecks(repo, snapshot.record.head.sha, snapshot.policy)
       : undefined;
   if (mode !== "checks" && checks !== undefined) {
     requireEvidence(
-      checks.every((check) => check.bucket === "pass"),
+      priorCiObservation || checks.every((check) => check.bucket === "pass"),
       "required checks are not passing",
     );
     snapshot.policy.requiredChecks = checks;
   }
-  const current = finishRead(repo, pr, snapshot, mode === "observe");
-  if (observing && current.state === "open") {
+  const current = finishRead(
+    repo,
+    pr,
+    snapshot,
+    observing && mode !== "observe-admission" && !priorCiObservation,
+    priorCiObservation,
+  );
+  if (observing && !priorCiObservation && current.state === "open") {
     // REST can still be calculating after GraphQL is ready. Select the alternate
     // reader before retaining intent; mutation dispatch never changes transports.
     requireRestSupport(
@@ -632,6 +673,8 @@ function main([mode, repository, prValue, head, bodySnapshot, expectedObservatio
         },
       },
       restPolicy: snapshot.policy,
+      // The admission owner validates both endpoints before retaining an observation.
+      ...(priorCiObservation ? { mainBefore: snapshot.mainBefore } : {}),
       transport: "rest",
     };
   } else {
