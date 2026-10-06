@@ -42,8 +42,8 @@ export function createCodexCatalogDecoder() {
         "utf8",
       ),
     );
-    // Skip leftover preview bytes so they do not count against incomplete-frame limits.
-    if (!bounded && bounder.isSkipping && decoder.hasPending) {
+    // Skip dropped preview lines so they do not count against incomplete-frame limits.
+    if (!bounded && bounder.isInPreview && decoder.hasPending) {
       return { pending: true, failures };
     }
     const parsed = decoder.parse(bounded);

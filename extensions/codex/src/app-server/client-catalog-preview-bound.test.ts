@@ -122,20 +122,52 @@ describe("Codex catalog preview JSON bounding", () => {
     ["sparse words across the prefix", `${"a     ".repeat(1_000)}${"b".repeat(5_000)}`],
     ["a terminal control in the prefix", `\u001b[31mred\u001b[0m ${"z".repeat(100_000)}`],
     ["a surrogate pair at the display boundary", `${"x".repeat(499)}😀${"y".repeat(5_000)}`],
+    ["text after a whitespace run beyond the fallback cap", `${" ".repeat(70_000)}meaningful`],
+    ["text after escaped newlines beyond the fallback cap", `${"\n".repeat(70_000)}meaningful`],
   ])("keeps the displayed preview unchanged for %s", (_name, preview) => {
     expect(boundedPreview(preview)).not.toBe(preview);
     expect(displayedPreview(boundedPreview(preview))).toBe(displayedPreview(preview));
   });
 
-  it("keeps the full preview when the prefix cannot determine the display", () => {
+  it("keeps short text after a long whitespace prefix", () => {
     const preview = `${" ".repeat(3_000)}short`;
-    expect(boundedPreview(preview)).toBe(preview);
+    expect(boundedPreview(preview)).toBe(" short");
     expect(displayedPreview(boundedPreview(preview))).toBe("short");
   });
 
-  it("still bounds previews that never determine the display", () => {
-    const preview = " ".repeat(200_000);
-    expect(boundedPreview(preview).length).toBe(64 * 1024);
+  it("still bounds control-only previews that never determine the display", () => {
+    const preview = "\u0007".repeat(100_000);
+    const raw = threadList(preview);
+    const bounded = boundPreviews(raw);
+    expect(bounded.length).toBeLessThan(70 * 1024);
     expect(displayedPreview(boundedPreview(preview))).toBe(displayedPreview(preview));
+  });
+
+  it("does not count whitespace-only preview lines against incomplete-frame recovery", () => {
+    const decode = createCodexCatalogDecoder();
+    const first = decode({
+      bytes: catalogBytes('{"id":1,"result":{"data":[{"id":"thread-1","preview":"start'),
+      route: "unresolved",
+    });
+    expect(first.pending).toBe(true);
+    for (let index = 0; index < 1_500; index++) {
+      const blank = decode({ bytes: catalogBytes("    "), route: "unresolved" });
+      expect(blank.pending).toBe(true);
+      expect(blank.failures).toEqual([]);
+    }
+    const complete = decode({
+      bytes: catalogBytes('meaningful","cwd":"/tmp"}]}}'),
+      route: "unresolved",
+    });
+    expect(complete.failures).toEqual([]);
+    expect(complete.pending).toBe(false);
+    expect(complete.message).toMatchObject({
+      result: { data: [{ id: "thread-1", cwd: "/tmp" }] },
+    });
+    const { preview } = (complete.message as { result: { data: Array<{ preview: string }> } })
+      .result.data[0]!;
+    const unbounded = ["start", ...Array.from({ length: 1_500 }, () => "    "), "meaningful"];
+    expect(displayedPreview(preview)).toBe(displayedPreview(unbounded.join("\n")));
+    expect(displayedPreview(preview)).toBe("start meaningful");
   });
 });

@@ -60,8 +60,9 @@ can use network I/O. Previews remain limited to 500 characters;
 native hydration and catalog pages remain limited to 64 rows each. Native `thread/list`
 does not cap stored previews, so wire JSON can still be large. Catalog decoding
 drops a `preview` tail before JSON.parse once the retained prefix fixes the displayed
-text (otherwise it keeps up to 64 KiB), so an oversized page does not exhaust
-incomplete-frame recovery. Each catalog host has
+text and collapses whitespace runs as it reads, so an oversized page does not exhaust
+incomplete-frame recovery. Only previews whose terminal controls leave the display
+undetermined are cut at 64 KiB. Each catalog host has
 its own fail-soft response budget, so one slow or unavailable host cannot stall
 the rest of the list. Complete catalog `thread/list` pages and metadata-only `thread/read` responses
 up to 64 KiB are parsed and projected inline, avoiding worker startup for small

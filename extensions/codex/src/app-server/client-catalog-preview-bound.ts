@@ -46,7 +46,9 @@ const SIMPLE_ESCAPES: Record<string, string> = {
  *
  * The tail is only dropped once the retained prefix fixes the displayed preview: at least
  * the canonical selector's prefix, no terminal controls, and more than the display length
- * of collapsed, trimmed text. Otherwise the preview is kept up to `maxRawChars`.
+ * of collapsed, trimmed text. Whitespace after the first unit of a run is dropped as it is
+ * read, since the projection collapses each run to one space. Only previews whose
+ * terminal controls keep the display undetermined are cut at `maxRawChars`.
  */
 export class CodexCatalogPreviewBounder {
   private inString = false;
@@ -62,6 +64,8 @@ export class CodexCatalogPreviewBounder {
   private previewHasText = false;
   private previewPendingSpace = false;
   private previewHasControl = false;
+  private previewInWhitespace = false;
+  private escapeStart = -1;
   private skipping = false;
   private readonly stack: Frame[] = [];
   private readonly limits: CodexCatalogPreviewBoundLimits;
@@ -72,6 +76,11 @@ export class CodexCatalogPreviewBounder {
 
   get isSkipping(): boolean {
     return this.skipping;
+  }
+
+  /** Whether the next input continues a native preview string. */
+  get isInPreview(): boolean {
+    return this.inString && this.previewValue;
   }
 
   reset(): void {
@@ -90,6 +99,13 @@ export class CodexCatalogPreviewBounder {
     }
     const kept: string[] = [];
     let start = 0;
+    this.escapeStart = -1;
+    if (this.isInPreview && !this.skipping && !this.escape && this.unicodeLeft === 0) {
+      // The message decoder joins a preview that spans lines with an escaped newline.
+      if (this.notePreviewUnit("\n", 2, false) === "stop") {
+        this.skipping = true;
+      }
+    }
     for (let index = 0; index < chunk.length; index++) {
       const character = chunk[index]!;
       if (this.skipping) {
@@ -109,10 +125,13 @@ export class CodexCatalogPreviewBounder {
       if (this.inString) {
         const escaped = this.decodeEscape(character);
         let unit: string | undefined;
+        let unitStart = index;
         if (escaped !== undefined) {
           unit = escaped || undefined;
+          unitStart = this.escapeStart;
         } else if (character === "\\") {
           this.escape = true;
+          this.escapeStart = index;
         } else if (character === '"') {
           this.finishString();
           continue;
@@ -121,7 +140,21 @@ export class CodexCatalogPreviewBounder {
         }
         if (this.capturingKey) {
           this.currentKey += character;
-        } else if (this.previewValue && this.notePreviewChar(unit)) {
+          continue;
+        }
+        if (!this.previewValue || unit === undefined) {
+          continue;
+        }
+        // An escape that began in an earlier chunk was already emitted, so it stays.
+        const action = this.notePreviewUnit(
+          unit,
+          unitStart >= 0 ? index + 1 - unitStart : 0,
+          unitStart >= 0,
+        );
+        if (action === "drop") {
+          kept.push(chunk.slice(start, unitStart));
+          start = index + 1;
+        } else if (action === "stop") {
           kept.push(chunk.slice(start, index + 1));
           start = chunk.length;
           this.skipping = true;
@@ -190,6 +223,7 @@ export class CodexCatalogPreviewBounder {
     this.previewHasText = false;
     this.previewPendingSpace = false;
     this.previewHasControl = false;
+    this.previewInWhitespace = false;
   }
 
   private beginString(): void {
@@ -240,31 +274,37 @@ export class CodexCatalogPreviewBounder {
     }
   }
 
-  /** Return whether the retained preview now determines the display, so the tail can go. */
-  private notePreviewChar(unit: string | undefined): boolean {
-    this.previewRawChars++;
-    if (unit === undefined) {
-      return false;
-    }
-    this.previewUnits++;
+  /** Decide whether a decoded preview unit is kept, dropped, or ends the retained prefix. */
+  private notePreviewUnit(
+    unit: string,
+    rawLength: number,
+    droppable: boolean,
+  ): "keep" | "drop" | "stop" {
     // Mirror the canonical projection: whitespace runs collapse to one space and trim.
     if (/\s/u.test(unit)) {
+      if (this.previewInWhitespace && droppable) {
+        return "drop";
+      }
+      this.previewInWhitespace = true;
       this.previewPendingSpace = this.previewHasText;
     } else {
+      this.previewInWhitespace = false;
       this.previewTextUnits += this.previewPendingSpace ? 2 : 1;
       this.previewPendingSpace = false;
       this.previewHasText = true;
       this.previewHasControl ||= /\p{Cc}/u.test(unit);
     }
+    this.previewUnits++;
+    this.previewRawChars += rawLength;
     if (this.previewRawChars >= this.limits.maxRawChars) {
-      return true;
+      return "stop";
     }
     // One extra unit keeps truncateUtf16Safe's surrogate lookahead at the display boundary.
-    return (
-      !this.previewHasControl &&
+    return !this.previewHasControl &&
       this.previewUnits >= this.limits.prefixUnits &&
       this.previewTextUnits > this.limits.displayUnits + 1
-    );
+      ? "stop"
+      : "keep";
   }
 
   /**

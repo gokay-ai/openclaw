@@ -1,6 +1,7 @@
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { describe, expect, it, vi } from "vitest";
+import { CODEX_CATALOG_LOCAL_HOST_RESPONSE_TIMEOUT_MS } from "./session-catalog-limits.js";
 import {
   fixture,
   nodeFixture,
@@ -619,7 +620,7 @@ describe("Codex catalog list operation", () => {
       });
       operation.close();
       expect(f.onHost.mock.calls.map(([host]) => host.hostId)).toEqual([f.homes[1]!.hostId]);
-      await vi.advanceTimersByTimeAsync(20_000);
+      await vi.advanceTimersByTimeAsync(CODEX_CATALOG_LOCAL_HOST_RESPONSE_TIMEOUT_MS);
       await Promise.all(f.publications);
       expect(f.onHost).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -662,7 +663,7 @@ describe("Codex catalog list operation", () => {
       await survivorStarted.promise;
       surviving.resolve(page(["survivor"]));
       await nextTurn();
-      await vi.advanceTimersByTimeAsync(20_000);
+      await vi.advanceTimersByTimeAsync(CODEX_CATALOG_LOCAL_HOST_RESPONSE_TIMEOUT_MS);
       await expect(advancing.done).resolves.toMatchObject({
         status: "fulfilled",
         value: {
@@ -703,7 +704,7 @@ describe("Codex catalog list operation", () => {
       expect(adoption.hold).toBeUndefined();
       surviving.resolve(page(["survivor"]));
       await nextTurn();
-      await vi.advanceTimersByTimeAsync(20_000);
+      await vi.advanceTimersByTimeAsync(CODEX_CATALOG_LOCAL_HOST_RESPONSE_TIMEOUT_MS);
       expect(advancing.state.settled).toBe(true);
       await expect(advancing.done).resolves.toMatchObject({
         status: "fulfilled",
