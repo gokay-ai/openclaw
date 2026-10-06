@@ -357,26 +357,27 @@ class CodexCatalogListDriver {
       return;
     }
     try {
-      const pending = host.page.next();
-      let page: Awaited<typeof pending>;
+      // One deadline covers the page read and adoption projection, so a stalled binding
+      // read cannot keep this host active after paging finishes.
+      const pending = (async (): Promise<CodexSessionCatalogHost | undefined> => {
+        const page = await host.page.next();
+        params.signal?.throwIfAborted();
+        return page.done
+          ? await projectLocalHost(params, this.selection().agentId, host.source, page.page)
+          : undefined;
+      })();
       try {
-        page = await withTimeout(
+        const value = await withTimeout(
           pending,
           CODEX_CATALOG_LOCAL_HOST_RESPONSE_TIMEOUT_MS,
           "Codex session catalog host timed out",
         );
+        if (value) {
+          host.value = value;
+        }
       } catch (error) {
         void pending.catch(() => undefined);
         throw error;
-      }
-      params.signal?.throwIfAborted();
-      if (page.done) {
-        host.value = await projectLocalHost(
-          params,
-          this.selection().agentId,
-          host.source,
-          page.page,
-        );
       }
     } catch (error) {
       this.localFailed = true;

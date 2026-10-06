@@ -1,5 +1,13 @@
+import { sanitizeTerminalText } from "openclaw/plugin-sdk/text-chunking";
 import { describe, expect, it } from "vitest";
-import { CodexCatalogPreviewBounder } from "./client-catalog-preview-bound.js";
+import {
+  selectCodexCatalogPreviewInput,
+  truncateCodexCatalogPreview,
+} from "../session-catalog-parsing.js";
+import {
+  CodexCatalogPreviewBounder,
+  type CodexCatalogPreviewBoundLimits,
+} from "./client-catalog-preview-bound.js";
 import { createCodexCatalogDecoder } from "./client-catalog-response.js";
 
 function threadList(preview: string, extra?: Record<string, unknown>) {
@@ -9,8 +17,19 @@ function threadList(preview: string, extra?: Record<string, unknown>) {
   });
 }
 
-function boundPreviews(text: string, maxPreviewChars: number): string {
-  return new CodexCatalogPreviewBounder(maxPreviewChars).push(text);
+function boundPreviews(text: string, limits?: Partial<CodexCatalogPreviewBoundLimits>): string {
+  return new CodexCatalogPreviewBounder(limits).push(text);
+}
+
+function displayedPreview(preview: string): string {
+  return truncateCodexCatalogPreview(selectCodexCatalogPreviewInput(preview), sanitizeTerminalText);
+}
+
+function boundedPreview(preview: string): string {
+  const parsed = JSON.parse(boundPreviews(threadList(preview))) as {
+    result: { data: Array<{ preview: string }> };
+  };
+  return parsed.result.data[0]!.preview;
 }
 
 function catalogBytes(text: string): Uint8Array<ArrayBuffer> {
@@ -20,7 +39,7 @@ function catalogBytes(text: string): Uint8Array<ArrayBuffer> {
 describe("Codex catalog preview JSON bounding", () => {
   it("truncates preview strings so oversized thread/list pages remain parseable", () => {
     const raw = threadList("x".repeat(50_000));
-    const bounded = boundPreviews(raw, 16);
+    const bounded = boundPreviews(raw, { prefixUnits: 16, displayUnits: 4 });
     const parsed = JSON.parse(bounded) as {
       result: { data: Array<{ id: string; preview: string }> };
     };
@@ -36,7 +55,9 @@ describe("Codex catalog preview JSON bounding", () => {
         data: [{ id: "thread-1", name: "preview", preview: 'say "hi"' }],
       },
     });
-    expect(JSON.parse(boundPreviews(raw, 32))).toEqual(JSON.parse(raw));
+    expect(JSON.parse(boundPreviews(raw, { prefixUnits: 32, displayUnits: 4 }))).toEqual(
+      JSON.parse(raw),
+    );
   });
 
   it("skips escaped quotes inside an oversized preview without ending the string", () => {
@@ -46,7 +67,7 @@ describe("Codex catalog preview JSON bounding", () => {
         data: [{ id: "thread-1", preview: `hello "world" ${"x".repeat(200)}`, cwd: "/tmp" }],
       },
     });
-    const parsed = JSON.parse(boundPreviews(raw, 15)) as {
+    const parsed = JSON.parse(boundPreviews(raw, { prefixUnits: 13, displayUnits: 4 })) as {
       result: { data: Array<{ id: string; preview: string; cwd: string }> };
     };
     expect(parsed.result.data[0]).toEqual({
@@ -57,7 +78,7 @@ describe("Codex catalog preview JSON bounding", () => {
   });
 
   it("skips the remainder of a preview across chunks until the closing quote", () => {
-    const bounder = new CodexCatalogPreviewBounder(4);
+    const bounder = new CodexCatalogPreviewBounder({ prefixUnits: 4, displayUnits: 2 });
     const first = bounder.push('{"result":{"data":[{"id":"thread-1","preview":"abcd');
     const middle = bounder.push(`${"x".repeat(8_000)}more`);
     const last = bounder.push('tail","cwd":"/tmp"}]}}');
@@ -92,5 +113,29 @@ describe("Codex catalog preview JSON bounding", () => {
     expect(complete.message).toMatchObject({
       result: { data: [{ id: "thread-1", cwd: "/tmp" }] },
     });
+  });
+
+  it.each([
+    ["plain text", "x".repeat(50_000)],
+    ["a whitespace-heavy prefix", `${" ".repeat(2_048)}meaningful ${"text ".repeat(400)}`],
+    ["escaped newlines in the prefix", `${"\n".repeat(3_000)}after ${"y".repeat(5_000)}`],
+    ["sparse words across the prefix", `${"a     ".repeat(1_000)}${"b".repeat(5_000)}`],
+    ["a terminal control in the prefix", `\u001b[31mred\u001b[0m ${"z".repeat(100_000)}`],
+    ["a surrogate pair at the display boundary", `${"x".repeat(499)}😀${"y".repeat(5_000)}`],
+  ])("keeps the displayed preview unchanged for %s", (_name, preview) => {
+    expect(boundedPreview(preview)).not.toBe(preview);
+    expect(displayedPreview(boundedPreview(preview))).toBe(displayedPreview(preview));
+  });
+
+  it("keeps the full preview when the prefix cannot determine the display", () => {
+    const preview = `${" ".repeat(3_000)}short`;
+    expect(boundedPreview(preview)).toBe(preview);
+    expect(displayedPreview(boundedPreview(preview))).toBe("short");
+  });
+
+  it("still bounds previews that never determine the display", () => {
+    const preview = " ".repeat(200_000);
+    expect(boundedPreview(preview).length).toBe(64 * 1024);
+    expect(displayedPreview(boundedPreview(preview))).toBe(displayedPreview(preview));
   });
 });

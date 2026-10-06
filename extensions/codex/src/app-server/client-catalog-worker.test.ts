@@ -495,4 +495,16 @@ describe("Codex catalog worker transport", () => {
     expect(warn).not.toHaveBeenCalled();
     expect(parse).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["a whitespace-heavy prefix", `${" ".repeat(4_096)}meaningful ${"text ".repeat(20_000)}`],
+    ["a terminal control in the prefix", `\u001b[1mbold\u001b[0m ${"z".repeat(100_000)}`],
+  ])("projects worker previews like the inline projection for %s", async (_name, preview) => {
+    const harness = createHarness();
+    const thread = { id: "large", preview };
+    const inline = projectCodexCatalogNativeResponse({ data: [thread] }, sanitizeTerminalText);
+    const request = harness.client.request("thread/list", {}, { catalogPreview: true });
+    harness.send({ id: requestId(harness), result: { data: [thread] } });
+    await expect(request).resolves.toEqual(inline);
+  });
 });

@@ -59,8 +59,9 @@ Native adoption bindings still use their storage owner, and paired-node enumerat
 can use network I/O. Previews remain limited to 500 characters;
 native hydration and catalog pages remain limited to 64 rows each. Native `thread/list`
 does not cap stored previews, so wire JSON can still be large. Catalog decoding
-truncates each `preview` string to the display prefix before JSON.parse so an
-oversized page does not exhaust incomplete-frame recovery. Each catalog host has
+drops a `preview` tail before JSON.parse once the retained prefix fixes the displayed
+text (otherwise it keeps up to 64 KiB), so an oversized page does not exhaust
+incomplete-frame recovery. Each catalog host has
 its own fail-soft response budget, so one slow or unavailable host cannot stall
 the rest of the list. Complete catalog `thread/list` pages and metadata-only `thread/read` responses
 up to 64 KiB are parsed and projected inline, avoiding worker startup for small
@@ -74,8 +75,8 @@ projection and the captured row admission. Native control reads, normal streamin
 and full-history reads keep their in-process decoder. Control reads preserve complete
 native metadata, including model selection and direct-input capability; transcript
 consumers require complete native raw items.
-Each native list page contains at most 64 rows. Incoming previews are truncated
-to the prefix used for display before parse, then both paths apply the existing
+Each native list page contains at most 64 rows. Incoming previews are bounded
+before parse without changing the displayed text, then both paths apply the existing
 prefix-first preview selector and 500-character display bound. Unchanged
 background rows can reuse resident previews before delivery. Large native payloads
 and their temporary objects stay in the worker. Metadata reads preserve exact

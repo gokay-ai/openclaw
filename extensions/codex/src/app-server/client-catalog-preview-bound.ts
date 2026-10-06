@@ -1,4 +1,7 @@
-import { SESSION_PREVIEW_PREFIX_LENGTH } from "../session-catalog-parsing.js";
+import {
+  MAX_SESSION_PREVIEW_LENGTH,
+  SESSION_PREVIEW_PREFIX_LENGTH,
+} from "../session-catalog-parsing.js";
 
 type ObjectFrame = {
   kind: "object";
@@ -11,19 +14,61 @@ type ArrayFrame = {
 };
 type Frame = ObjectFrame | ArrayFrame;
 
-/** Truncate native `preview` strings before JSON.parse so catalog pages stay bounded. */
+export type CodexCatalogPreviewBoundLimits = {
+  /** Decoded units the canonical selector inspects before it may drop the tail. */
+  prefixUnits: number;
+  /** Display length; the retained text must determine at least this many units plus lookahead. */
+  displayUnits: number;
+  /** Raw JSON characters kept when the prefix cannot determine the display text. */
+  maxRawChars: number;
+};
+
+// 64 rows x 64 KiB stays well below the decoder's incomplete-frame recovery cap.
+const DEFAULT_LIMITS: CodexCatalogPreviewBoundLimits = {
+  prefixUnits: SESSION_PREVIEW_PREFIX_LENGTH,
+  displayUnits: MAX_SESSION_PREVIEW_LENGTH,
+  maxRawChars: 64 * 1024,
+};
+
+const SIMPLE_ESCAPES: Record<string, string> = {
+  '"': '"',
+  "\\": "\\",
+  "/": "/",
+  b: "\b",
+  f: "\f",
+  n: "\n",
+  r: "\r",
+  t: "\t",
+};
+
+/**
+ * Drop the tail of native `preview` strings before JSON.parse so catalog pages stay bounded.
+ *
+ * The tail is only dropped once the retained prefix fixes the displayed preview: at least
+ * the canonical selector's prefix, no terminal controls, and more than the display length
+ * of collapsed, trimmed text. Otherwise the preview is kept up to `maxRawChars`.
+ */
 export class CodexCatalogPreviewBounder {
   private inString = false;
   private escape = false;
   private unicodeLeft = 0;
+  private unicodeHex = "";
   private capturingKey = false;
   private currentKey = "";
   private previewValue = false;
-  private previewChars = 0;
+  private previewRawChars = 0;
+  private previewUnits = 0;
+  private previewTextUnits = 0;
+  private previewHasText = false;
+  private previewPendingSpace = false;
+  private previewHasControl = false;
   private skipping = false;
   private readonly stack: Frame[] = [];
+  private readonly limits: CodexCatalogPreviewBoundLimits;
 
-  constructor(private readonly maxPreviewChars = SESSION_PREVIEW_PREFIX_LENGTH) {}
+  constructor(limits: Partial<CodexCatalogPreviewBoundLimits> = {}) {
+    this.limits = { ...DEFAULT_LIMITS, ...limits };
+  }
 
   get isSkipping(): boolean {
     return this.skipping;
@@ -31,12 +76,10 @@ export class CodexCatalogPreviewBounder {
 
   reset(): void {
     this.inString = false;
-    this.escape = false;
-    this.unicodeLeft = 0;
+    this.resetString();
     this.capturingKey = false;
     this.currentKey = "";
     this.previewValue = false;
-    this.previewChars = 0;
     this.skipping = false;
     this.stack.length = 0;
   }
@@ -50,7 +93,7 @@ export class CodexCatalogPreviewBounder {
     for (let index = 0; index < chunk.length; index++) {
       const character = chunk[index]!;
       if (this.skipping) {
-        if (this.consumeEscape(character)) {
+        if (this.decodeEscape(character) !== undefined) {
           continue;
         }
         if (character === "\\") {
@@ -64,31 +107,24 @@ export class CodexCatalogPreviewBounder {
         continue;
       }
       if (this.inString) {
-        if (this.consumeEscape(character)) {
-          if (this.capturingKey) {
-            this.currentKey += character;
-          } else if (this.notePreviewChar(chunk, start, index, kept)) {
-            start = chunk.length;
-          }
-          continue;
-        }
-        if (character === "\\") {
+        const escaped = this.decodeEscape(character);
+        let unit: string | undefined;
+        if (escaped !== undefined) {
+          unit = escaped || undefined;
+        } else if (character === "\\") {
           this.escape = true;
-          if (this.capturingKey) {
-            this.currentKey += character;
-          } else if (this.notePreviewChar(chunk, start, index, kept, false)) {
-            start = chunk.length;
-          }
-          continue;
-        }
-        if (character === '"') {
+        } else if (character === '"') {
           this.finishString();
           continue;
+        } else {
+          unit = character;
         }
         if (this.capturingKey) {
           this.currentKey += character;
-        } else if (this.notePreviewChar(chunk, start, index, kept)) {
+        } else if (this.previewValue && this.notePreviewChar(unit)) {
+          kept.push(chunk.slice(start, index + 1));
           start = chunk.length;
+          this.skipping = true;
         }
         continue;
       }
@@ -144,24 +180,33 @@ export class CodexCatalogPreviewBounder {
     return kept.join("");
   }
 
+  private resetString(): void {
+    this.escape = false;
+    this.unicodeLeft = 0;
+    this.unicodeHex = "";
+    this.previewRawChars = 0;
+    this.previewUnits = 0;
+    this.previewTextUnits = 0;
+    this.previewHasText = false;
+    this.previewPendingSpace = false;
+    this.previewHasControl = false;
+  }
+
   private beginString(): void {
     const frame = this.stack.at(-1);
     this.inString = true;
-    this.escape = false;
-    this.unicodeLeft = 0;
+    this.resetString();
     this.capturingKey = frame?.kind === "object" && frame.expect === "key";
     this.currentKey = "";
     this.previewValue =
       frame?.kind === "object" && frame.expect === "value" && frame.lastKey === "preview";
-    this.previewChars = 0;
     this.skipping = false;
   }
 
   private finishString(): void {
     const frame = this.stack.at(-1);
     this.inString = false;
-    this.escape = false;
-    this.unicodeLeft = 0;
+    this.resetString();
     this.skipping = false;
     if (this.capturingKey && frame?.kind === "object") {
       frame.lastKey = this.currentKey;
@@ -172,7 +217,6 @@ export class CodexCatalogPreviewBounder {
     this.capturingKey = false;
     this.currentKey = "";
     this.previewValue = false;
-    this.previewChars = 0;
   }
 
   private finishValue(): void {
@@ -196,41 +240,58 @@ export class CodexCatalogPreviewBounder {
     }
   }
 
-  private notePreviewChar(
-    chunk: string,
-    start: number,
-    index: number,
-    kept: string[],
-    includeCurrent = true,
-  ): boolean {
-    if (!this.previewValue) {
+  /** Return whether the retained preview now determines the display, so the tail can go. */
+  private notePreviewChar(unit: string | undefined): boolean {
+    this.previewRawChars++;
+    if (unit === undefined) {
       return false;
     }
-    this.previewChars++;
-    if (this.previewChars < this.maxPreviewChars || this.escape || this.unicodeLeft > 0) {
-      return false;
+    this.previewUnits++;
+    // Mirror the canonical projection: whitespace runs collapse to one space and trim.
+    if (/\s/u.test(unit)) {
+      this.previewPendingSpace = this.previewHasText;
+    } else {
+      this.previewTextUnits += this.previewPendingSpace ? 2 : 1;
+      this.previewPendingSpace = false;
+      this.previewHasText = true;
+      this.previewHasControl ||= /\p{Cc}/u.test(unit);
     }
-    kept.push(chunk.slice(start, includeCurrent ? index + 1 : index));
-    this.skipping = true;
-    return true;
-  }
-
-  private consumeEscape(character: string): boolean {
-    if (this.unicodeLeft > 0) {
-      this.unicodeLeft--;
-      if (this.unicodeLeft === 0) {
-        this.escape = false;
-      }
+    if (this.previewRawChars >= this.limits.maxRawChars) {
       return true;
     }
+    // One extra unit keeps truncateUtf16Safe's surrogate lookahead at the display boundary.
+    return (
+      !this.previewHasControl &&
+      this.previewUnits >= this.limits.prefixUnits &&
+      this.previewTextUnits > this.limits.displayUnits + 1
+    );
+  }
+
+  /**
+   * Consume one escape character. Returns the decoded unit when an escape completes, "" while
+   * a \u escape is still pending, and undefined when no escape is in progress.
+   */
+  private decodeEscape(character: string): string | undefined {
+    if (this.unicodeLeft > 0) {
+      this.unicodeHex += character;
+      this.unicodeLeft--;
+      if (this.unicodeLeft > 0) {
+        return "";
+      }
+      this.escape = false;
+      const unit = String.fromCharCode(Number.parseInt(this.unicodeHex, 16));
+      this.unicodeHex = "";
+      return unit;
+    }
     if (!this.escape) {
-      return false;
+      return undefined;
     }
     if (character === "u") {
       this.unicodeLeft = 4;
-    } else {
-      this.escape = false;
+      this.unicodeHex = "";
+      return "";
     }
-    return true;
+    this.escape = false;
+    return SIMPLE_ESCAPES[character] ?? character;
   }
 }
