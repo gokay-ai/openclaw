@@ -134,6 +134,9 @@ retires older sealed Doctor captures and reports each removal; incomplete captur
 and update captures are never retired automatically, so take a verified backup
 when you need a long-term copy.
 
+Filesystems that reject native no-replace rename can still retain captures through
+exclusive hard-link or file-copy publication. Existing captures are never overwritten.
+
 These captures are evidence for manual recovery. Active writers can change state
 during capture; an observed change leaves the capture incomplete and produces a
 warning. The set is not an atomic snapshot across active stores. Missing,
@@ -648,8 +651,10 @@ it does not approve future capability additions.
 
 ### Skipped legacy audit recovery
 
-Doctor can migrate legacy audit logs on filesystems that reject native
-no-replace rename by using an exclusive hard link, then removing the old name.
+In native `auto` mode on Linux, fs-safe handles legacy audit moves on filesystems
+that reject no-replace rename by publishing an exclusive hard link, then removing
+the old name. Doctor retains its separate compatibility publisher when the native
+helper is missing or disabled. Native `require` mode refuses unsupported moves.
 This preserves the original inode, including later appends from an older CLI's
 open file descriptor. Existing destinations are never overwritten. Doctor
 recovers interrupted link pairs before importing; backups capture one sanitized
