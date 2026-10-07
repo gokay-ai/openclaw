@@ -463,6 +463,35 @@ describe("agent.wait gateway dedupe observations", () => {
     expect(waiter.respond).toHaveBeenCalledWith(true, expect.objectContaining({ runId, status }));
   });
 
+  it.each(["queue", "gateway_draining"] as const)(
+    "keeps a completed run over a later %s timeout observation",
+    async (timeoutPhase) => {
+      const runId = `completed-then-${timeoutPhase}-timeout`;
+      const dedupe = new Map<string, DedupeEntry>();
+      completeRun(dedupe, runId);
+      setGatewayDedupeEntry({
+        dedupe,
+        key: `agent:${runId}`,
+        entry: {
+          ts: Date.now(),
+          ok: false,
+          payload: { runId, status: "timeout", endedAt: 300, timeoutPhase },
+        },
+      });
+
+      const waiter = waitThroughGateway({ runId, timeoutMs: 0 });
+      await waiter.promise;
+      expect(waiter.respond).toHaveBeenCalledWith(
+        true,
+        expect.objectContaining({ runId, status: "ok", endedAt: 200 }),
+      );
+      expect(await waitForAgentJob({ runId, timeoutMs: 0 })).toMatchObject({
+        status: "ok",
+        endedAt: 200,
+      });
+    },
+  );
+
   it("binds queued observation to the queue entry selected after waiting", async () => {
     const runId = "queued-observation-session";
     const lifecycleGeneration = getAgentEventLifecycleGeneration();
