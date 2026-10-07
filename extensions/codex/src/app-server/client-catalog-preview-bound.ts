@@ -47,8 +47,9 @@ const SIMPLE_ESCAPES: Record<string, string> = {
  * The tail is only dropped once the retained prefix fixes the displayed preview: at least
  * the canonical selector's prefix, no terminal controls, and more than the display length
  * of collapsed, trimmed text. Whitespace after the first unit of a run is dropped as it is
- * read, since the projection collapses each run to one space. Only previews whose
- * terminal controls keep the display undetermined are cut at `maxRawChars`.
+ * read, since the projection collapses each run to one space. Controls before the first
+ * ANSI introducer are deleted by the sanitizer, so runs of them shrink to one unit. Only
+ * previews whose ANSI sequences keep the display undetermined are cut at `maxRawChars`.
  */
 export class CodexCatalogPreviewBounder {
   private inString = false;
@@ -65,6 +66,7 @@ export class CodexCatalogPreviewBounder {
   private previewPendingSpace = false;
   private previewHasControl = false;
   private previewInWhitespace = false;
+  private previewInControlRun = false;
   private escapeStart = -1;
   private skipping = false;
   private readonly stack: Frame[] = [];
@@ -224,6 +226,7 @@ export class CodexCatalogPreviewBounder {
     this.previewPendingSpace = false;
     this.previewHasControl = false;
     this.previewInWhitespace = false;
+    this.previewInControlRun = false;
   }
 
   private beginString(): void {
@@ -286,9 +289,19 @@ export class CodexCatalogPreviewBounder {
         return "drop";
       }
       this.previewInWhitespace = true;
+      this.previewInControlRun = false;
       this.previewPendingSpace = this.previewHasText;
+    } else if (!this.previewHasControl && isRemovableControl(unit)) {
+      // Before any ANSI introducer the sanitizer deletes these in place, so one per run
+      // keeps adjacent whitespace runs apart and the rest can go.
+      if (this.previewInControlRun && droppable) {
+        return "drop";
+      }
+      this.previewInWhitespace = false;
+      this.previewInControlRun = true;
     } else {
       this.previewInWhitespace = false;
+      this.previewInControlRun = false;
       this.previewTextUnits += this.previewPendingSpace ? 2 : 1;
       this.previewPendingSpace = false;
       this.previewHasText = true;
@@ -334,4 +347,9 @@ export class CodexCatalogPreviewBounder {
     this.escape = false;
     return SIMPLE_ESCAPES[character] ?? character;
   }
+}
+
+/** Controls the sanitizer drops without effect while no ANSI introducer precedes them. */
+function isRemovableControl(unit: string): boolean {
+  return /\p{Cc}/u.test(unit) && unit !== "\u001b" && unit !== "\u009b" && unit !== "\u009d";
 }

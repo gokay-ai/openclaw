@@ -500,6 +500,7 @@ describe("Codex catalog worker transport", () => {
     ["a whitespace-heavy prefix", `${" ".repeat(4_096)}meaningful ${"text ".repeat(20_000)}`],
     ["a terminal control in the prefix", `\u001b[1mbold\u001b[0m ${"z".repeat(100_000)}`],
     ["text beyond the fallback cap", `${" ".repeat(65_536)}meaningful text`],
+    ["text after removable controls", `${"\u0007".repeat(15_000)}meaningful text`],
   ])("projects worker previews like the inline projection for %s", async (_name, preview) => {
     const harness = createHarness();
     const thread = { id: "large", preview };
