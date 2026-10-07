@@ -124,8 +124,14 @@ describe("Codex catalog preview JSON bounding", () => {
     ["a surrogate pair at the display boundary", `${"x".repeat(499)}😀${"y".repeat(5_000)}`],
     ["text after a whitespace run beyond the fallback cap", `${" ".repeat(70_000)}meaningful`],
     ["text after escaped newlines beyond the fallback cap", `${"\n".repeat(70_000)}meaningful`],
-    ["text after removable controls beyond the fallback cap", `${"\u0007".repeat(15_000)}meaningful text`],
-    ["removable controls between whitespace runs", `a ${"\u0007".repeat(20_000)} b ${"y".repeat(5_000)}`],
+    [
+      "text after removable controls beyond the fallback cap",
+      `${"\u0007".repeat(15_000)}meaningful text`,
+    ],
+    [
+      "removable controls between whitespace runs",
+      `a ${"\u0007".repeat(20_000)} b ${"y".repeat(5_000)}`,
+    ],
     [
       "removable controls before an ANSI sequence",
       `${"\u0001".repeat(15_000)}\u001b[1mbold\u001b[0m ${"z".repeat(100_000)}`,
