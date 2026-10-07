@@ -181,17 +181,14 @@ export function createGatewayAuxHandlers(
     { cacheRejections: true },
   );
   const reloadSecrets = createGatewaySecretsReloader(params);
-  const loadSecretsModule = createLazyPromise(() => import("./server-methods/secrets.js"), {
-    cacheRejections: true,
-  });
   const loadSecretStoreWriteService = createLazyPromise(
     async () => {
-      const { createSecretStoreWriteService } = await loadSecretsModule();
+      const { createSecretStoreWriteService } = await import("./server-methods/secrets.js");
       return createSecretStoreWriteService({ reloadSecrets, log: params.log });
     },
     { cacheRejections: true },
   );
-  const questionManager = new QuestionManager(() =>
+  const questionManager = new QuestionManager(params.scheduler, () =>
     params.log.warn?.("Question terminal publication failed; answer state retained."),
   );
   const loadQuestionHandlers = createLazyPromise(
@@ -200,7 +197,7 @@ export function createGatewayAuxHandlers(
         import("./server-methods/question.js"),
         loadSecretStoreWriteService(),
       ]);
-      return createQuestionHandlers(questionManager, storeWriteService);
+      return createQuestionHandlers(questionManager, storeWriteService, params.scheduler);
     },
     { cacheRejections: true },
   );
@@ -322,10 +319,6 @@ export function createGatewayAuxHandlers(
       questionManager.cancelClosedAuthorities({ runId: claim.runId });
     },
   );
-  const unregisterApprovalAuthorityObserver = () => {
-    unregisterWorkerTurnClaimClosedObserver?.();
-    unregisterApprovalAuthorityClosedObserver();
-  };
   const cancelRunBoundApprovals = (
     target: string | AgentRunDelegatedAuthority,
     context: GatewayRequestContext,
@@ -382,7 +375,7 @@ export function createGatewayAuxHandlers(
   const loadSecretsHandlers = createLazyPromise(
     async () => {
       const [{ createSecretsHandlers }, storeWriteService] = await Promise.all([
-        loadSecretsModule(),
+        import("./server-methods/secrets.js"),
         loadSecretStoreWriteService(),
       ]);
       return createSecretsHandlers({
@@ -424,7 +417,8 @@ export function createGatewayAuxHandlers(
       stopPromise = (async () => {
         // Preserve the existing authority-observer stop boundary. Retirement is
         // local only; pending durable approvals belong to next-start epoch recovery.
-        unregisterApprovalAuthorityObserver();
+        unregisterWorkerTurnClaimClosedObserver?.();
+        unregisterApprovalAuthorityClosedObserver();
         beginCloseApprovalObservers();
         for (const manager of approvalManagers) {
           manager.retire();

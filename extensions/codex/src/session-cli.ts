@@ -1,4 +1,3 @@
-// Codex CLI lists native sessions and adopts or archives idle local threads.
 import type { Command } from "commander";
 import {
   addGatewayClientOptions,
@@ -17,7 +16,7 @@ import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import {
   CODEX_LOCAL_SESSION_HOST_ID,
   CODEX_SESSION_CATALOG_MAX_PAGE_LIMIT,
-} from "./session-catalog.js";
+} from "./session-catalog-parsing.js";
 
 type CodexGatewayOptions = GatewayRpcOpts & {
   agent?: string;

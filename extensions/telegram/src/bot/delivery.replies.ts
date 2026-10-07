@@ -74,7 +74,6 @@ type DeliveryProgress = {
 
 type TelegramReplyChannelData = {
   buttons?: TelegramInlineButtons;
-  pin?: boolean;
   reaction?: {
     emoji?: unknown;
     replyToId?: unknown;
@@ -82,10 +81,6 @@ type TelegramReplyChannelData = {
 };
 
 type ChunkTextFn = (text: string) => TelegramTextDeliveryPage[];
-
-function markDelivered(progress: DeliveryProgress): void {
-  progress.deliveredCount += 1;
-}
 
 function resolveReplyToForSend(params: {
   replyToId?: number;
@@ -189,7 +184,7 @@ async function deliverTextReply(params: TextReplyParams): Promise<number | undef
             params.progress,
             suppressReply && first ? params.replyToId : replyToMessageId,
           );
-          markDelivered(params.progress);
+          params.progress.deliveredCount += 1;
         },
       };
     },
@@ -265,7 +260,7 @@ async function deliverMediaReply(
       message,
       ...(plainText ? { text: plainText } : {}),
     });
-    markDelivered(params.progress);
+    params.progress.deliveredCount += 1;
   };
   const deliverAcceptedMedia = async (options: {
     sender: TelegramOutboundMediaSender;
@@ -431,7 +426,7 @@ async function deliverMediaReply(
           firstDeliveredMessageId ??= fallbackMessageId;
           visibleFallbackText = fallbackText;
           markReplyApplied(params.progress, voiceFallbackReplyTo);
-          markDelivered(params.progress);
+          params.progress.deliveredCount += 1;
           return;
         }
         if (isTelegramCaptionTooLongError(voiceErr)) {
@@ -619,16 +614,11 @@ async function deliverReplyPlan(
     deliveredCount: 0,
     ...(params.promptContextSequence ? { promptContext: params.promptContextSequence } : {}),
   };
-  const recordMessageId = async (messageId: number) => {
-    if (params.accountId || params.ownerAgentId) {
-      await recordSentMessage(params.chatId, messageId, params.cfg, {
-        accountId: params.accountId,
-        agentId: params.ownerAgentId,
-      });
-      return;
-    }
-    await recordSentMessage(params.chatId, messageId, params.cfg);
-  };
+  const recordMessageId = (messageId: number) =>
+    recordSentMessage(params.chatId, messageId, params.cfg, {
+      accountId: params.accountId,
+      agentId: params.ownerAgentId,
+    });
   const mediaLoader = params.mediaLoader ?? loadWebMedia;
   const transcriptMirror = params.transcriptMirror;
   const deliveredContents: Array<{ text: string; mediaUrls: string[] }> = [];
@@ -690,23 +680,23 @@ async function deliverReplyPlan(
       // table rendering only applies to the rich markdown funnel.
       richTables: params.richMessages === true && params.textMode !== "html",
     });
-    const mediaList = reply?.mediaUrls?.length
+    const mediaList = reply.mediaUrls?.length
       ? reply.mediaUrls
-      : reply?.mediaUrl
+      : reply.mediaUrl
         ? [reply.mediaUrl]
         : [];
     const hasMedia = mediaList.length > 0;
-    const presentation = normalizeMessagePresentation(reply?.presentation);
-    const interactive = reply?.interactive;
+    const presentation = normalizeMessagePresentation(reply.presentation);
+    const interactive = reply.interactive;
     const resolvedReplyText =
       resolveTelegramInteractiveTextFallback({
-        text: reply?.text,
+        text: reply.text,
         interactive,
         presentation,
       }) ??
-      reply?.text ??
+      reply.text ??
       "";
-    if (reply && resolvedReplyText !== (reply.text ?? "")) {
+    if (resolvedReplyText !== (reply.text ?? "")) {
       reply = { ...reply, text: resolvedReplyText };
     }
     const telegramData = reply.channelData?.telegram as TelegramReplyChannelData | undefined;
@@ -723,7 +713,7 @@ async function deliverReplyPlan(
       continue;
     }
     if (!resolvedReplyText && !hasMedia && !reactionEmoji) {
-      if (reply?.audioAsVoice) {
+      if (reply.audioAsVoice) {
         logVerbose("telegram reply has audioAsVoice without media/text; skipping");
         continue;
       }
@@ -779,6 +769,13 @@ async function deliverReplyPlan(
 
     let contentForSentHook =
       reply.text || (reply.audioAsVoice === true ? resolveVoiceFallbackText(reply) : "") || "";
+    const sentHookContext = {
+      sessionKeyForInternalHooks: params.sessionKeyForInternalHooks,
+      chatId: params.chatId,
+      accountId: params.accountId,
+      isGroup: params.mirrorIsGroup,
+      groupId: params.mirrorGroupId,
+    };
 
     try {
       const deliveredCountBeforeReply = progress.deliveredCount;
@@ -802,7 +799,7 @@ async function deliverReplyPlan(
           verbose: false,
         });
         if (reactionResult.ok) {
-          markDelivered(progress);
+          progress.deliveredCount += 1;
         } else {
           params.runtime.error?.(danger(reactionResult.warning));
           continue;
@@ -861,25 +858,17 @@ async function deliverReplyPlan(
       }
 
       emitTelegramMessageSentHooks({
-        sessionKeyForInternalHooks: params.sessionKeyForInternalHooks,
-        chatId: params.chatId,
-        accountId: params.accountId,
+        ...sentHookContext,
         content: contentForSentHook,
         success: progress.deliveredCount > deliveredCountBeforeReply,
         messageId: firstDeliveredMessageId,
-        isGroup: params.mirrorIsGroup,
-        groupId: params.mirrorGroupId,
       });
     } catch (error) {
       emitTelegramMessageSentHooks({
-        sessionKeyForInternalHooks: params.sessionKeyForInternalHooks,
-        chatId: params.chatId,
-        accountId: params.accountId,
+        ...sentHookContext,
         content: contentForSentHook,
         success: false,
         error: formatErrorMessage(error),
-        isGroup: params.mirrorIsGroup,
-        groupId: params.mirrorGroupId,
       });
       sender.fail(
         error,

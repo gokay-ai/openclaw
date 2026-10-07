@@ -1,15 +1,18 @@
 import assertStrict from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-// Assertions for upgrade-survivor E2E scenarios.
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { UPGRADE_SURVIVOR_ASSERTION_SCENARIOS } from "../../../lib/upgrade-survivor-policy.mjs";
+import {
+  UPGRADE_SURVIVOR_ASSERTION_SCENARIOS,
+  usesStructuredToolSearchAtBaseline,
+} from "../../../lib/upgrade-survivor-policy.mjs";
 import {
   inspectNpmPackageTarball,
   validatePrepublishPluginRegistryArtifact,
 } from "../../../prepublish-plugin-registry-artifact.mjs";
+import { assert, readJson, write, writeJson } from "../fixtures/common.mjs";
 import { readPluginInstallIndex } from "../plugin-index-sqlite.mjs";
 import { recordSuccessfulUpdateCheck } from "./diagnostics.mjs";
 import {
@@ -75,10 +78,6 @@ function requireEnv(name) {
   return value;
 }
 
-function readJson(file) {
-  return JSON.parse(fs.readFileSync(file, "utf8"));
-}
-
 function readUpdateJson(file) {
   const raw = fs.readFileSync(file, "utf8");
   const jsonStart = raw.indexOf("{");
@@ -123,31 +122,14 @@ function isPathInsideManagedNpmProjectPackageRoot(params) {
   );
 }
 
-function write(file, contents) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, contents);
-}
-
-function writeJson(file, value) {
-  write(file, `${JSON.stringify(value, null, 2)}\n`);
-}
-
-function assert(condition, message) {
-  if (!condition) {
-    throw new Error(message);
-  }
-}
-
-function seedLegacySessionMetadata(stateDir, perAgent) {
-  const legacySessionsDir = perAgent
-    ? path.join(stateDir, "agents", "main", "sessions")
-    : path.join(stateDir, "sessions");
+function seedLegacySessionMetadata(stateDir) {
+  const legacySessionsDir = path.join(stateDir, "agents", "main", "sessions");
   const baseUpdatedAt = Date.now() - 24 * 60 * 60 * 1000;
   writeJson(path.join(legacySessionsDir, "sessions.json"), {
-    [perAgent ? "agent:main:main" : "main"]: {
+    "agent:main:main": {
       sessionId: LEGACY_SESSION_MAIN_ID,
       sessionFile: path.join(legacySessionsDir, `${LEGACY_SESSION_MAIN_ID}.jsonl`),
-      provider: "openai",
+      modelProvider: "openai",
       model: "gpt-5.5",
       updatedAt: baseUpdatedAt,
       skillsSnapshot: {
@@ -160,17 +142,17 @@ function seedLegacySessionMetadata(stateDir, perAgent) {
         ],
       },
     },
-    [perAgent ? "agent:main:+15551234567" : "+15551234567"]: {
+    "agent:main:+15551234567": {
       sessionId: LEGACY_SESSION_DIRECT_ID,
       sessionFile: path.join(legacySessionsDir, `${LEGACY_SESSION_DIRECT_ID}.jsonl`),
-      provider: "openai",
+      modelProvider: "openai",
       model: "gpt-5.5",
       updatedAt: baseUpdatedAt + 100,
     },
-    [perAgent ? "agent:main:slack:channel:cupgrade" : "slack:channel:CUPGRADE"]: {
+    "agent:main:slack:channel:cupgrade": {
       sessionId: LEGACY_SESSION_GROUP_ID,
       sessionFile: path.join(legacySessionsDir, `${LEGACY_SESSION_GROUP_ID}.jsonl`),
-      provider: "openai",
+      modelProvider: "openai",
       model: "gpt-5.5",
       updatedAt: baseUpdatedAt + 200,
       lastChannel: "slack",
@@ -338,7 +320,7 @@ function seedState() {
       write(path.join(workspace, fileName), contents);
     }
   }
-  writeJson(path.join(workspace, ".openclaw", "workspace-state.json"), {
+  writeJson(path.join(workspace, "openclaw-workspace-state.json"), {
     version: 1,
     setupCompletedAt: "2026-04-01T00:00:00.000Z",
   });
@@ -352,8 +334,7 @@ function seedState() {
     agentId: "main",
     title: "Existing user session",
   });
-  // Volume imports start in per-agent JSON; other scenarios cover the older shared-store move.
-  seedLegacySessionMetadata(stateDir, scenario === "sqlite-volume");
+  seedLegacySessionMetadata(stateDir);
   sessionSourceFixture.recordLegacySessionSources(stateDir);
   seedLegacyExecApprovalPolicy(stateDir);
   if (scenario === "meeting-transcripts-sqlite") {
@@ -499,13 +480,15 @@ function assertConfigSurvived() {
   // Frozen recipes without coverage receipts predate this migration specimen.
   if (coverage && acceptsIntent(coverage, "tool-search")) {
     const toolSearch = config.tools?.toolSearch;
-    const baseline = process.env.OPENCLAW_UPGRADE_SURVIVOR_ASSERT_STAGE === "baseline";
+    const legacyBaseline =
+      process.env.OPENCLAW_UPGRADE_SURVIVOR_ASSERT_STAGE === "baseline" &&
+      !usesStructuredToolSearchAtBaseline(coverage.baselineVersion);
     assert(
-      toolSearch?.mode === (baseline ? "code" : "tools"),
+      toolSearch?.mode === (legacyBaseline ? "code" : "tools"),
       "Tool Search mode was not preserved or migrated",
     );
     assert(toolSearch.enabled !== false, "Tool Search was disabled during migration");
-    if (baseline) {
+    if (legacyBaseline) {
       assert(toolSearch.codeTimeoutMs === 5000, "Tool Search legacy timeout specimen changed");
     } else {
       assert(
@@ -513,6 +496,20 @@ function assertConfigSurvived() {
         "Tool Search legacy timeout was not removed",
       );
     }
+  }
+
+  if (coverage && acceptsIntent(coverage, "silent-reply-internal-retirement")) {
+    const baseline = process.env.OPENCLAW_UPGRADE_SURVIVOR_ASSERT_STAGE === "baseline";
+    assertStrict.deepEqual(
+      config.agents?.defaults?.silentReply,
+      baseline ? { group: "allow", internal: "allow" } : { group: "allow" },
+      "default silent-reply policy was not preserved or migrated",
+    );
+    assertStrict.deepEqual(
+      config.surfaces?.discord?.silentReply,
+      baseline ? { group: "disallow", internal: "disallow" } : { group: "disallow" },
+      "Discord silent-reply policy was not preserved or migrated",
+    );
   }
 
   if (acceptsIntent(coverage, "agents")) {
@@ -656,6 +653,66 @@ function assertConfigSurvived() {
       "logging.file tilde path changed",
     );
   }
+}
+
+function assertLegacyOperatorPendingDelivery([updateJson, updateErr]) {
+  const stateDir = requireEnv("OPENCLAW_STATE_DIR");
+  const fixture = readJson(
+    path.join(
+      requireEnv("OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT"),
+      "legacy-operator-pending-delivery.json",
+    ),
+  );
+  for (const file of [updateJson, updateErr]) {
+    assert(
+      !fs.readFileSync(file, "utf8").includes("Legacy session entry state requires migration"),
+      "published update stopped on legacy pending-delivery state",
+    );
+  }
+  const db = new DatabaseSync(path.join(stateDir, "agents/ops/agent/openclaw-agent.sqlite"), {
+    readOnly: true,
+  });
+  let row;
+  try {
+    row = db
+      .prepare("SELECT current_session_id, entry_json FROM session_nodes WHERE session_key = ?")
+      .get("agent:ops:legacy-pending-delivery");
+  } finally {
+    db.close();
+  }
+  assert(row, "published update did not import legacy session into SQLite");
+  assertStrict.equal(row.current_session_id, "legacy-pending-delivery");
+  const entry = JSON.parse(row.entry_json);
+  assertStrict.equal(entry.sessionId, "legacy-pending-delivery");
+  assertStrict.deepEqual(entry.pendingFinalDelivery, {
+    kind: "replayable",
+    text: "Saved July reply",
+    createdAt: 1710000000000,
+    context: { channel: "telegram", to: "synthetic-recipient" },
+    intentId: "legacy-pending-intent",
+  });
+  assertStrict.deepEqual(
+    Object.keys(entry).filter((key) => key.startsWith("pendingFinalDelivery")),
+    ["pendingFinalDelivery"],
+  );
+  const runsDir = path.join(stateDir, "session-sqlite-migration-runs");
+  const archived = fs
+    .readdirSync(runsDir)
+    .filter((name) => name.endsWith(".json"))
+    .map((name) => readJson(path.join(runsDir, name)))
+    .filter((run) => run.completedAt)
+    .flatMap((run) => run.targets.flatMap((target) => target.completedMoves))
+    .some(
+      (move) =>
+        move.kind === "legacy-store" &&
+        move.sourcePath === fixture.storePath &&
+        fs.existsSync(move.archivePath) &&
+        fs.readFileSync(move.archivePath, "utf8") === fixture.original,
+    );
+  assert(archived, "published update did not archive the original legacy session bytes");
+  console.log(
+    "Published updater: legacy pending delivery imported into SQLite; original JSON archived unchanged.",
+  );
 }
 
 function assertStateSurvived() {
@@ -1188,6 +1245,25 @@ function readMigratedSessionStore(stateDir, targetStorePath) {
           const entry = JSON.parse(row.value_json);
           store[row.key] =
             typeof row.session_id === "string" ? { ...entry, sessionId: row.session_id } : entry;
+        }
+        if (
+          source === "session_nodes" &&
+          db.prepare("PRAGMA user_version").get().user_version >= 24
+        ) {
+          for (const row of db
+            .prepare("SELECT session_key, field, value_json FROM session_entry_snapshots")
+            .all()) {
+            assert(Object.hasOwn(store, row.session_key), "orphaned session snapshot");
+            assert(
+              ["sessionDiffBaseline", "skillsSnapshot", "systemPromptReport"].includes(row.field),
+              "unknown session snapshot field",
+            );
+            assert(
+              !Object.hasOwn(store[row.session_key], row.field),
+              "duplicate inline session snapshot",
+            );
+            store[row.session_key][row.field] = JSON.parse(row.value_json);
+          }
         }
         return { source, store };
       }
@@ -1831,6 +1907,10 @@ if (command === "list-scenarios") {
   legacyOperator.seedLegacyOperatorAgent();
 } else if (command === "seed-legacy-operator-gateway") {
   legacyOperator.seedLegacyOperatorGatewayState();
+} else if (command === "seed-legacy-operator-pending-delivery") {
+  legacyOperator.seedLegacyOperatorPendingDelivery();
+} else if (command === "assert-legacy-operator-pending-delivery") {
+  assertLegacyOperatorPendingDelivery(process.argv.slice(3));
 } else if (command === "assert-legacy-operator-gateway") {
   legacyOperator.assertLegacyOperatorGatewayState(process.argv[3] || "candidate");
 } else if (command === "legacy-operator-turn") {
@@ -1849,7 +1929,7 @@ if (command === "list-scenarios") {
 } else if (command === "seed-volume") {
   assert(getScenario() === "sqlite-volume", "seed-volume requires the sqlite-volume scenario");
   const stateDir = requireEnv("OPENCLAW_STATE_DIR");
-  seedUpgradeVolume(stateDir);
+  await seedUpgradeVolume(stateDir, process.argv[3]);
 } else if (command === "assert-config") {
   assertConfigSurvived();
 } else if (command === "assert-restart-serving-turn") {

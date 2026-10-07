@@ -7,9 +7,10 @@ import net from "node:net";
 import path from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
-import { type ClientOptions, type RawData, WebSocket } from "openclaw/plugin-sdk/websocket-runtime";
+import { type ClientOptions, WebSocket } from "openclaw/plugin-sdk/websocket-runtime";
 import { resolveCodexAppServerUserHomeDir, type CodexAppServerStartOptions } from "./config.js";
 import type { CodexAppServerTransport } from "./transport.js";
+import { codexWebSocketDataToBuffer } from "./websocket-data.js";
 
 const WEBSOCKET_HANDSHAKE_TIMEOUT_MS = 10_000;
 const WEBSOCKET_PING_INTERVAL_MS = 20_000;
@@ -193,7 +194,7 @@ export function createWebSocketTransport(
     if (options.transport === "websocket") {
       recordConnectionActivity();
     }
-    const frame = websocketFrameToBuffer(data);
+    const frame = codexWebSocketDataToBuffer(data);
     const writable = stdout.write(frame);
     const delimited = frame.at(-1) === 10 || stdout.write(Buffer.from("\n"));
     if (!writable || !delimited) {
@@ -266,7 +267,6 @@ function connectCodexAppServerUnixSocket(socketPath: string): net.Socket {
   return net.createConnection(socketPath);
 }
 
-/** Resolves the canonical or explicitly configured Codex control socket. */
 export function resolveCodexAppServerUnixSocketPath(
   options: Pick<CodexAppServerStartOptions, "env" | "transport" | "url">,
 ): string | undefined {
@@ -289,17 +289,4 @@ export function resolveCodexAppServerUnixSocketPath(
       "app-server-control.sock",
     )
   );
-}
-
-function websocketFrameToBuffer(data: RawData): Buffer {
-  if (typeof data === "string") {
-    return Buffer.from(data);
-  }
-  if (Buffer.isBuffer(data)) {
-    return data;
-  }
-  if (Array.isArray(data)) {
-    return Buffer.concat(data);
-  }
-  return Buffer.from(data);
 }

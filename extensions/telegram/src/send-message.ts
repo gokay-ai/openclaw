@@ -169,7 +169,6 @@ export async function sendMessageTelegram(
     const tableMode = opts.tableMode ?? resolveTelegramTableMode(richMessagesParams);
     const renderHtmlText = (value: string) =>
       renderTelegramHtmlText(value, { textMode, tableMode });
-    // Resolve link preview setting from config (default: enabled).
     const linkPreviewEnabled = account.config.linkPreview ?? true;
     const linkPreviewOptions = linkPreviewEnabled ? undefined : { is_disabled: true };
 
@@ -481,9 +480,8 @@ export async function sendMessageTelegram(
         direction: "outbound",
       });
 
-      // If text was too long for a caption, send it as a separate follow-up message.
       // Use HTML conversion so markdown renders like captions.
-      if (needsSeparateText && followUpText) {
+      if (followUpText) {
         let textResult: TelegramSendResult;
         try {
           textResult = await sendChunkedText(followUpText, "text follow-up send", {
