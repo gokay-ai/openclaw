@@ -45,37 +45,26 @@ async function collectBundleMcpRuntimeToolSchemaFindings(params: {
     warn: () => {},
   });
   return collectNormalizedToolSchemaFindings({
-    agentId: params.agentId,
+    ...params,
     tools: activeBundleTools,
-    cfg: params.cfg,
-    workspaceDir: params.workspaceDir,
-    modelRef: params.modelRef,
-    model: params.model,
-    normalizationFailureFinding: bundleMcpRuntimeNormalizationFailureFinding,
+    normalizationFailureFinding: (error) => bundleMcpRuntimeFailureFinding(error, "normalize"),
   });
 }
 
-function bundleMcpRuntimeNormalizationFailureFinding(error: unknown): HealthFinding {
+function bundleMcpRuntimeFailureFinding(
+  error: unknown,
+  phase: "load" | "normalize",
+): HealthFinding {
   return {
     checkId: "core/doctor/runtime-tool-schemas",
     severity: "error",
-    message: "Configured MCP tool schema validation could not normalize the runtime tool set.",
+    message: `Configured MCP tool schema validation could not ${phase} the runtime tool set.`,
     path: "mcp.servers",
     requirement: formatErrorMessage(error),
     fixHint:
-      "Fix provider/plugin schema normalization errors, then rerun doctor before relying on assistant tool startup.",
-  };
-}
-
-function bundleMcpRuntimeLoadFailureFinding(error: unknown): HealthFinding {
-  return {
-    checkId: "core/doctor/runtime-tool-schemas",
-    severity: "error",
-    message: "Configured MCP tool schema validation could not load the runtime tool set.",
-    path: "mcp.servers",
-    requirement: formatErrorMessage(error),
-    fixHint:
-      "Fix or disable the offending MCP server, then rerun doctor before relying on assistant tool startup.",
+      phase === "normalize"
+        ? "Fix provider/plugin schema normalization errors, then rerun doctor before relying on assistant tool startup."
+        : "Fix or disable the offending MCP server, then rerun doctor before relying on assistant tool startup.",
   };
 }
 
@@ -162,10 +151,6 @@ function collectBundleMcpDiagnosticSentinels(params: {
       ? { allow: effectivePolicy.providerProfileAlsoAllow }
       : undefined,
   ]);
-  if (explicitAllowlist.length === 0) {
-    return sentinels;
-  }
-
   for (const entry of explicitAllowlist) {
     const sentinelName = synthesizeBundleMcpAllowlistSentinelName({
       safeServerName: params.diagnostic.safeServerName,
@@ -400,7 +385,7 @@ export async function collectRuntimeToolSchemaFindings(
           } catch (error) {
             bundleRuntimeLoadErrorsByContext.set(
               runtimeContext,
-              bundleMcpRuntimeLoadFailureFinding(error),
+              bundleMcpRuntimeFailureFinding(error, "load"),
             );
           }
         }

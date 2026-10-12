@@ -52,8 +52,7 @@ type ListParams = {
   sessionEntries?: SessionCatalogEntrySnapshot;
   allowPartialResults?: boolean;
   nodeSnapshots?: CodexCatalogNodeSnapshots;
-  includeLocal?: boolean;
-  localHomes?: CodexCatalogHome[];
+  localHomes: Array<CodexCatalogHome | undefined>;
 };
 
 type ListStep<THost> = { done: false } | { done: true; hosts: THost[] };
@@ -232,10 +231,8 @@ class CodexCatalogListDriver {
   private prepared: PreparedList | undefined;
   private locals: LocalHost[] = [];
   private nodeHosts: CodexSessionCatalogHost[] | undefined;
-  private nodeActive = false;
   private nodeResults: Array<() => CodexSessionCatalogHost | undefined> = [];
   private readonly nodeSnapshots: CodexCatalogNodeSnapshots;
-  private readonly nodeGeneration: number;
   private nodeDiscoveryFailed = false;
   private readonly nodePublications = { pending: 0 };
   private nodesStarted = false;
@@ -249,7 +246,7 @@ class CodexCatalogListDriver {
   constructor(params: ListParams) {
     this.params = params;
     this.nodeSnapshots = params.nodeSnapshots ?? new CodexCatalogNodeSnapshots();
-    this.nodeGeneration = this.nodeSnapshots.start(params.config);
+    this.nodeSnapshots.start(params.config);
   }
 
   private request(): ListParams {
@@ -274,14 +271,10 @@ class CodexCatalogListDriver {
     }).sessionAgentId;
     const query = readGatewayParams(params.query);
     const requestedHostIds = query.hostIds ? new Set(query.hostIds) : undefined;
-    const localSources =
-      params.localHomes?.filter(
-        (source) => !requestedHostIds || requestedHostIds.has(source.hostId),
-      ) ??
-      (params.includeLocal !== false &&
-      (!requestedHostIds || requestedHostIds.has(CODEX_LOCAL_SESSION_HOST_ID))
-        ? [undefined]
-        : []);
+    const localSources = params.localHomes.filter(
+      (source) =>
+        !requestedHostIds || requestedHostIds.has(source?.hostId ?? CODEX_LOCAL_SESSION_HOST_ID),
+    );
     const diagnostics = currentCodexCatalogListDiagnostics();
     if (diagnostics) {
       diagnostics.fields.localHostCount = localSources.length;
@@ -334,7 +327,6 @@ class CodexCatalogListDriver {
       !this.localFailed &&
       this.nodeHosts !== undefined &&
       !this.nodeDiscoveryFailed &&
-      !this.nodeActive &&
       this.nodePublications.pending === 0
     );
   }
@@ -454,7 +446,7 @@ class CodexCatalogListDriver {
       return [host];
     }
     params.signal?.throwIfAborted();
-    this.nodeSnapshots.observe(this.nodeGeneration, inventory);
+    this.nodeSnapshots.observe(inventory);
     const { listNodeAdoptedSessionEntries, nodeAdoptedSourceKey } =
       await import("./session-catalog-node-adoption.js");
     const { compareNodeLabels, listPairedNode, nodeLabel } =
@@ -485,7 +477,7 @@ class CodexCatalogListDriver {
         node.commands,
         node.invocableCommands,
       ]);
-      const publication = this.nodeSnapshots.forNode(node, this.nodeGeneration, key);
+      const publication = this.nodeSnapshots.forNode(node, key);
       const { project, publish, publishCached, readPublished } = createNodeHostPublication(
         publication,
         adopted,
@@ -503,7 +495,7 @@ class CodexCatalogListDriver {
           publishCached(latest);
           return project(latest.host);
         }
-        return !partial ? result : publication.valid() ? (readPublished() ?? result) : undefined;
+        return partial ? (readPublished() ?? result) : result;
       });
       if (cached) {
         publishCached(cached);
@@ -557,15 +549,13 @@ class CodexCatalogListDriver {
       return;
     }
     this.nodesStarted = true;
-    this.nodeActive = true;
     void this.readNodes().then(
       (hosts) => {
         this.nodeHosts = hosts;
-        this.nodeActive = false;
         this.checkpoint();
       },
       (error: unknown) => {
-        this.nodeActive = false;
+        this.nodeHosts = [];
         this.failure ??= { error };
         this.checkpoint();
       },
@@ -577,7 +567,7 @@ class CodexCatalogListDriver {
       return;
     }
     if (this.failure) {
-      if (!this.nodeActive) {
+      if (this.nodeHosts !== undefined) {
         this.step.reject(this.failure.error);
       }
     } else if (this.nodeHosts && this.locals.every((host) => host.value !== undefined)) {
