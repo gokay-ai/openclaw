@@ -465,16 +465,15 @@ function normalizeComment(
   stored: readonly WorkboardComment[] = [],
 ): WorkboardComment | null {
   const id = normalizeOptionalString(record.id);
-  const rawBody = normalizeOptionalString(record.body);
   // Card rewrites (dispatch reclaim, promote, block) copy stored comments back
   // through here. Rows written before the 2000-char limit, or by internal
-  // writers, must round-trip unchanged; new or edited bodies keep the limit.
-  const body =
-    id &&
-    rawBody &&
-    stored.some((comment) => comment.id === id && normalizeOptionalString(comment.body) === rawBody)
-      ? rawBody
-      : normalizeBoundedString(record.body, undefined, 2000, "comment body");
+  // writers, must round-trip byte-for-byte; new or edited bodies keep the limit.
+  const storedBody = id
+    ? stored.find((comment) => comment.id === id && comment.body === record.body)?.body
+    : undefined;
+  const body = storedBody?.trim()
+    ? storedBody
+    : normalizeBoundedString(record.body, undefined, 2000, "comment body");
   const createdAt = normalizeTimestamp(record.createdAt, 0);
   if (!id || !body || !createdAt) {
     return null;

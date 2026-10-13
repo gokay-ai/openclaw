@@ -1,11 +1,12 @@
 // Dispatch comment-limit regressions split from store.test.ts (max-lines).
 import { DatabaseSync } from "node:sqlite";
-import { describe, expect, it } from "vitest";
+import { describe, expect } from "vitest";
 import { computeCardDiagnostics } from "./store-card-helpers.js";
+import { sqliteOnly } from "./test/sqlite-only.js";
 import { createWorkboardSqliteTestHarness } from "./test/sqlite-store.js";
 
 describe("WorkboardStore dispatch comment limits", () => {
-  it("keeps stored oversized comment bodies intact through dispatch reclaim", async () => {
+  sqliteOnly("keeps stored oversized comment bodies intact through dispatch reclaim", async () => {
     const { store, dbPath } = createWorkboardSqliteTestHarness();
     const stranded = await Promise.all(
       Array.from({ length: 18 }, (_, index) =>
@@ -31,13 +32,15 @@ describe("WorkboardStore dispatch comment limits", () => {
     });
     const sibling = await store.create({ title: "Unaffected sibling", status: "ready" });
     const now = Date.now() + 2 * 60 * 60 * 1000;
-    const oversized = stranded
+    // Surrounding whitespace must survive too; rows are deleted and reinserted.
+    const summary = stranded
       .flatMap((card) =>
         computeCardDiagnostics(card, now)
           .filter((entry) => entry.kind === "stranded_ready")
           .map((entry) => `- ${entry.kind} ${card.id}: ${entry.title}. ${entry.detail}`),
       )
       .join("\n");
+    const oversized = `  ${summary}\n`;
     expect(oversized.length).toBeGreaterThan(2000);
 
     const rawDb = new DatabaseSync(dbPath);
