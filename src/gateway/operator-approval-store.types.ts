@@ -174,3 +174,8 @@ export type ListTerminalOperatorApprovalsInput = {
   kind?: OperatorApprovalKind;
   nowMs?: number;
 };
+/** Legacy callback guards share the worker precommit boundary with host-owned guards. */
+export type OperatorApprovalStoreGuard = {
+  family: "worker" | "native-compatibility";
+  assertCurrent: () => void;
+};

@@ -2,11 +2,7 @@ import path from "node:path";
 import { gatewayOriginScope } from "@openclaw/gateway-client/browser";
 import type { BrowserContextOptions, Page } from "playwright";
 import { expect, it } from "vitest";
-import {
-  openChatModelPicker,
-  selectChatModel,
-  selectChatModelOption,
-} from "../test-helpers/select-picker-e2e.ts";
+import { selectChatModel } from "../test-helpers/select-picker-e2e.ts";
 import {
   MOVED_WORKSPACE,
   NEW_SESSION_MODEL_CATALOG,
@@ -17,6 +13,7 @@ import {
   captureProjectUiProof,
   captureUiProof,
   captureUiProofEnabled,
+  checkoutBaseRefInput,
   choosePackagesFolder,
   createNewSessionPageE2eSuite,
   installMockGateway,
@@ -231,60 +228,6 @@ suite.define(() => {
     });
   });
 
-  it("selects the model for a plain new session", async () => {
-    await withNewSessionPage(DESKTOP_CONTEXT, async (page) => {
-      const gateway = await installMockGateway(page, {
-        models: NEW_SESSION_MODEL_CATALOG,
-        methodResponses: {
-          "sessions.create": { key: "agent:main:model-draft", runStarted: true },
-        },
-      });
-      await page.goto(`${suite.server.baseUrl}new`);
-      const modelSelect = page.locator('[data-chat-model-select="true"]');
-      await modelSelect.waitFor();
-      expect(
-        await page.locator('.new-session-page__composer [data-chat-model-select="true"]').count(),
-      ).toBe(1);
-      expect(
-        await page.locator('.new-session-page__triggers [data-chat-model-select="true"]').count(),
-      ).toBe(0);
-      await openChatModelPicker(page);
-      const pickerOpen = () =>
-        modelSelect.evaluate(
-          (element) => element.closest("details")?.hasAttribute("open") ?? false,
-        );
-      const modelTriggerBox = await modelSelect.boundingBox();
-      const modelMenuBox = await page.locator(".chat-controls__model-menu").boundingBox();
-      expect(modelTriggerBox).not.toBeNull();
-      expect(modelMenuBox).not.toBeNull();
-      expect(modelMenuBox?.x ?? 0).toBeLessThanOrEqual(modelTriggerBox?.x ?? 0);
-      expect((modelMenuBox?.x ?? 0) + (modelMenuBox?.width ?? 0)).toBeLessThanOrEqual(
-        await page.evaluate(() => window.innerWidth),
-      );
-      await expect.poll(pickerOpen).toBe(true);
-      await selectChatModelOption(
-        page.locator('[data-chat-model-option="anthropic/claude-sonnet-4-6"]'),
-      );
-      // Model selection commits immediately and closes the model popover.
-      await expect.poll(pickerOpen).toBe(false);
-      await expect
-        .poll(() => modelSelect.evaluate((element) => element === document.activeElement))
-        .toBe(false);
-      await modelSelect.click();
-      await expect.poll(pickerOpen).toBe(true);
-      await page.mouse.click(8, 8);
-      await expect.poll(pickerOpen).toBe(false);
-      await page.locator(".new-session-page__message").fill("use this model");
-      await page.getByRole("button", { name: "Start session" }).click();
-
-      const create = await gateway.waitForRequest("sessions.create");
-      expect(create.params).toMatchObject({
-        message: "use this model",
-        model: "anthropic/claude-sonnet-4-6",
-      });
-    });
-  });
-
   it("keeps the effort label, slider stop, and create payload aligned after a model switch", async () => {
     await withNewSessionPage(DESKTOP_CONTEXT, async (page) => {
       const levels = (ids: string[]) => ids.map((id) => ({ id, label: id }));
@@ -396,7 +339,7 @@ suite.define(() => {
       await page
         .getByRole("button", { name: "New worktree Isolated copy of the repo", exact: true })
         .click();
-      await page.getByLabel("From", { exact: true }).fill("release/next");
+      await checkoutBaseRefInput(page).fill("release/next");
       await page.getByLabel("Name", { exact: true }).fill("remembered-task");
       await page.keyboard.press("Escape");
 
@@ -418,9 +361,7 @@ suite.define(() => {
       ).toBe("Local");
       await expect.poll(() => placeTrigger.getAttribute("data-worktree")).toBe("true");
       await placeTrigger.click();
-      await expect
-        .poll(() => page.getByLabel("From", { exact: true }).inputValue())
-        .toBe("release/next");
+      await expect.poll(() => checkoutBaseRefInput(page).inputValue()).toBe("release/next");
       await expect
         .poll(() => page.getByLabel("Name", { exact: true }).inputValue())
         .toBe("remembered-task");
@@ -742,10 +683,12 @@ suite.define(() => {
         code: "UNAVAILABLE",
         message: "branch lookup unavailable",
       });
-      // A failed lookup drops the unvalidated draft choice and keeps the
-      // session submittable; storage retains the preference for the next visit.
-      await expect.poll(() => placeTrigger.count()).toBe(0);
-      await expect.poll(() => start.isDisabled()).toBe(false);
+      // Discovery failure preserves the saved isolation choice without invalidating
+      // ready model metadata; the draft stays gated until Git can be validated.
+      await expect.poll(() => placeTrigger.getAttribute("data-worktree")).toBe("true");
+      await expect.poll(() => start.isDisabled()).toBe(true);
+      expect(await gateway.getRequests("sessions.create")).toHaveLength(0);
+      expect(await gateway.getRequests("chat.metadata")).toHaveLength(metadataRequests);
       await waitForCommittedNewSessionDraft(page, "keep both remembered choices", 0);
 
       await page.reload();

@@ -2,7 +2,6 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import JSZip from "jszip";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -19,16 +18,20 @@ import {
   getRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "../config/io.js";
+import { materializeRuntimeConfig } from "../config/materialize.js";
 import { pinRuntimePaths, resolveStateDir } from "../config/paths.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { AgentToolsConfig } from "../config/types.tools.js";
+import { validateConfigObjectRaw } from "../config/validation-core.js";
 import { sanitizeHostExecEnv } from "../infra/host-env-security.js";
 import {
   getInstallationTarget,
   resolveInstallationTarget,
   withInstallationTarget,
 } from "../infra/installation-target-context.js";
+import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
+import { triageTestRuntimeEntrypoints } from "../infra/triage-runtime.test-support.js";
 import { runUpdateRepairLoop } from "../infra/update-repair-agent.js";
 import * as repairRuntime from "../infra/update-repair-agent.runtime.js";
 import { runUpdateRepairTurn } from "../infra/update-repair-agent.runtime.js";
@@ -48,7 +51,7 @@ const mocks = vi.hoisted(() => ({
 
 // Diagnostics are fixture leaves; triage, exec, config, env filtering,
 // and child processes stay real so the handoff cannot hide behind an exec mock.
-vi.mock("./doctor-lint.js", () => ({ collectDoctorFindings: mocks.collectDoctorFindings }));
+vi.mock("./doctor-lint-runner.js", () => ({ collectDoctorFindings: mocks.collectDoctorFindings }));
 vi.mock("../logging/diagnostic-support-export.js", () => ({
   writeDiagnosticSupportExport: mocks.writeDiagnosticSupportExport,
 }));
@@ -59,9 +62,9 @@ vi.mock("../agents/embedded-agent-runner/run-entry.js", () => ({
 }));
 
 const execFileAsync = promisify(execFile);
-const pathsModuleUrl = pathToFileURL(path.resolve(import.meta.dirname, "../config/paths.ts")).href;
-const workspaceModuleUrl = pathToFileURL(
-  path.resolve(import.meta.dirname, "../agents/workspace-default.ts"),
+const pathsModuleUrl = resolveRuntimeWorkerUrl(triageTestRuntimeEntrypoints.paths).href;
+const workspaceModuleUrl = resolveRuntimeWorkerUrl(
+  triageTestRuntimeEntrypoints.workspaceDefault,
 ).href;
 const tsxApiUrl = import.meta.resolve("tsx/esm/api");
 const tsconfigPath = path.resolve(import.meta.dirname, "../../tsconfig.json");
@@ -82,8 +85,9 @@ async function inspectChildTarget(env: NodeJS.ProcessEnv, cwd: string): Promise<
   const source = `
     import { existsSync, readFileSync } from "node:fs";
     import path from "node:path";
-    const { register } = await import(${JSON.stringify(tsxApiUrl)});
-    const unregister = register({ tsconfig: ${JSON.stringify(tsconfigPath)} });
+    const unregister = ${JSON.stringify(pathsModuleUrl.endsWith(".ts"))}
+      ? (await import(${JSON.stringify(tsxApiUrl)})).register({ tsconfig: ${JSON.stringify(tsconfigPath)} })
+      : undefined;
     const { resolveStateDir, resolveConfigPath } = await import(${JSON.stringify(pathsModuleUrl)});
     const { resolveDefaultAgentWorkspaceDir } = await import(${JSON.stringify(workspaceModuleUrl)});
     const stateDir = resolveStateDir();
@@ -91,7 +95,7 @@ async function inspectChildTarget(env: NodeJS.ProcessEnv, cwd: string): Promise<
     const defaultWorkspaceDir = resolveDefaultAgentWorkspaceDir();
     const workspaceMarkerPath = path.join(defaultWorkspaceDir, "workspace-probe.txt");
     process.stdout.write(JSON.stringify({ stateDir, configPath, configExists: existsSync(configPath), marker: existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")).meta?.lastTouchedVersion : undefined, defaultWorkspaceDir, workspaceMarker: existsSync(workspaceMarkerPath) ? readFileSync(workspaceMarkerPath, "utf8") : undefined }));
-    await unregister();
+    await unregister?.();
   `;
   const { stdout } = await execFileAsync(
     process.execPath,
@@ -328,10 +332,11 @@ describe.skipIf(process.platform === "win32")("embedded triage installation targ
         payloads: [{ text: "fixture completed" }],
         meta: { durationMs: 1 },
       }));
+      mocks.agentCommand.mockReset().mockImplementation(runAgent);
       const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
       const target = resolveInstallationTarget();
       const result = await withInstallationTarget(target, () =>
-        agentExec.agentExecCommand("inspect", { cwd: state.workspaceDir }, runtime, { runAgent }),
+        agentExec.agentExecCommand("inspect", { cwd: state.workspaceDir }, runtime),
       );
       expect(result.exitCode).toBe(1);
       expect(result.envelope.error?.message).toContain("saved prompt");
@@ -342,7 +347,6 @@ describe.skipIf(process.platform === "win32")("embedded triage installation targ
         "inspect",
         { cwd: state.workspaceDir },
         runtime,
-        { runAgent },
       );
       expect(ordinary.exitCode).toBe(0);
       expect(runAgent).toHaveBeenCalledOnce();
@@ -459,6 +463,15 @@ describe.skipIf(process.platform === "win32")("embedded triage installation targ
                   plugins: { enabled: false },
                   gateway: { auth: { mode: "token", token: secret } },
                 };
+                const validatedConfig = validateConfigObjectRaw(config);
+                if (!validatedConfig.ok) {
+                  throw new Error(
+                    `Invalid triage fixture config: ${JSON.stringify(validatedConfig.issues)}`,
+                  );
+                }
+                const originalRuntimeConfig = materializeRuntimeConfig(validatedConfig.config, {
+                  manifestRegistry: { plugins: [] },
+                });
                 await state.writeConfig(config);
                 const agentDir = state.statePath("agents", "diagnostic", "agent");
                 const profileId = "fixture:subscription";
@@ -686,6 +699,7 @@ describe.skipIf(process.platform === "win32")("embedded triage installation targ
                   }),
                 );
 
+                expect(getRuntimeConfigSnapshot()).toBeNull();
                 const run = automatic
                   ? triageCommand(
                       runtime,
@@ -741,10 +755,12 @@ describe.skipIf(process.platform === "win32")("embedded triage installation targ
                 expect(process.env.OPENCLAW_STATE_DIR).toBe(originalSelectors.stateDir);
                 expect(process.env.OPENCLAW_CONFIG_PATH).toBe(originalSelectors.configPath);
                 expect(process.env.OPENCLAW_WORKSPACE_DIR).toBe(originalSelectors.workspaceDir);
-                expect(getRuntimeConfigSnapshot()).toBeNull();
                 if (automatic) {
+                  // Same-installation repair may pin config, but its run overlays stay local.
+                  expect(getRuntimeConfigSnapshot()).toEqual(originalRuntimeConfig);
                   expect((await fs.stat(runStateDir)).isDirectory()).toBe(true);
                 } else {
+                  expect(getRuntimeConfigSnapshot()).toBeNull();
                   await expect(fs.stat(runStateDir)).rejects.toMatchObject({ code: "ENOENT" });
                 }
                 expect(await fs.readFile(state.configPath, "utf8")).toBe(originalConfig);

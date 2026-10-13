@@ -48,6 +48,16 @@ Plugin commands can set `agentPromptGuidance` when the agent needs a short,
 command-owned routing hint. Keep that text about the command itself; do not add
 provider- or plugin-specific policy to core prompt builders.
 
+Commands that receive `senderIsOwner` also receive the host's optional
+`assertOwnerCurrent` callback when admitted as an owner. Capture that callback
+before awaiting preparation and pass it to the mutation owner's current-authority
+check. A boolean owner snapshot does not authorize a later write after the
+linked profile is demoted, unlinked, or reassigned. The callback is bound to the
+original identity and command invocation; retaining it cannot start new work
+after the handler returns. Already accepted operations still finish their
+settlement and cleanup. Ordinary authorized read commands and explicit Gateway
+scope checks retain their existing behavior.
+
 Commands may also declare a bounded client presentation action for parsed no-argument
 invocations:
 
@@ -126,3 +136,15 @@ still retained. Keep teardown in the command's existing lifecycle, such as
 `onDisconnect`, and report idle only after that work settles. `onDisconnect` alone
 does not establish idleness. Update older plugins to add the hook or use
 `openclaw update` and an operator-controlled node restart.
+
+ACP-backed catalogs can use `createAcpSessionCatalogAdoption` from
+the private-local `openclaw/plugin-sdk/session-catalog-runtime` to share
+adopted-session lookup and creation. Supply the catalog ID, local host ID,
+session-key prefix, plugin marker keys, and transcript reader. The helper preserves
+the marker shape, creates the ACP binding, and imports history before the session
+entry finishes initialization.
+
+Append-only JSONL catalogs can use `readSessionCatalogJsonlActivity` from the same
+private runtime seam for bounded upstream activity reads. The helper owns file
+opening, the one-MiB scan window, and offset advancement; the catalog classifies
+complete rows and retains its own timestamp and user-message semantics.

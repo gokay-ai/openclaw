@@ -6,9 +6,11 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ProviderModelRouteCandidate } from "../plugin-sdk/provider-model-types.js";
 import {
   resolveProviderModelCatalogId,
+  resolveProviderModelPolicySurface,
   resolveProviderModelRoutes,
 } from "../plugins/provider-model-routes.js";
 import type { ModelCatalogRoutePolicy } from "./model-catalog-route.js";
+import { normalizeCatalogRouteBaseUrl } from "./model-compat-catalog.js";
 import { splitTrailingAuthProfile } from "./model-ref-profile.js";
 
 /** Canonicalizes a model id only when its provider owns catalog equivalence. */
@@ -17,7 +19,7 @@ export function canonicalizeProviderModelId(providerId: string, modelId: string)
   return (provider && resolveProviderModelCatalogId({ provider, modelId })) || modelId;
 }
 
-/** Wire-id normalization is not a switch to another provider-owned model. */
+/** Wire-id normalization and provider-declared response identity are not a model switch. */
 export function isProviderModelRerouted(
   requested: { provider: string; model: string },
   effective: { provider: string; model: string; responseModel?: string },
@@ -26,22 +28,21 @@ export function isProviderModelRerouted(
   if (provider !== normalizeProviderId(effective.provider)) {
     return true;
   }
-  const model = canonicalizeProviderModelId(provider, requested.model);
+  const surface = provider ? resolveProviderModelPolicySurface(provider) : null;
+  const canonicalize = (modelId: string) =>
+    resolveProviderModelCatalogId({ provider, modelId, surface }) ?? modelId;
+  const model = canonicalize(requested.model);
+  const responseModel = effective.responseModel;
   return (
-    canonicalizeProviderModelId(provider, effective.model) !== model ||
-    (effective.responseModel !== undefined &&
-      canonicalizeProviderModelId(provider, effective.responseModel) !== model)
+    canonicalize(effective.model) !== model ||
+    (responseModel !== undefined &&
+      canonicalize(responseModel) !== model &&
+      surface?.isResponseModelEquivalent?.({
+        provider,
+        requestedModelId: requested.model,
+        responseModelId: responseModel,
+      }) !== true)
   );
-}
-
-function normalizeRouteBaseUrl(value: string): string {
-  try {
-    const url = new URL(value);
-    url.pathname = url.pathname.replace(/\/+$/u, "") || "/";
-    return url.toString();
-  } catch {
-    return value.replace(/\/+$/u, "");
-  }
 }
 
 function routeTupleMatches(
@@ -51,7 +52,8 @@ function routeTupleMatches(
   return (
     source.api === route.api &&
     typeof source.baseUrl === "string" &&
-    normalizeRouteBaseUrl(source.baseUrl) === normalizeRouteBaseUrl(route.baseUrl)
+    (normalizeCatalogRouteBaseUrl(source.baseUrl) ?? "") ===
+      (normalizeCatalogRouteBaseUrl(route.baseUrl) ?? "")
   );
 }
 

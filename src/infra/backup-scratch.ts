@@ -2,12 +2,12 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { sameFileIdentity } from "@openclaw/fs-safe/advanced";
 import { getChildLogger } from "../logging/logger.js";
 import { isMissingPathError } from "./errno.js";
 import { formatErrorMessage, hasErrnoCode } from "./errors.js";
-import { sameFileIdentity } from "./fs-safe-advanced.js";
-import { root as createRoot, type Root } from "./fs-safe.js";
-import { isSqliteLockError } from "./sqlite-error-diagnostics.js";
+import { FsSafeError, root as createRoot, type Root } from "./fs-safe.js";
+import { isSqliteLockError, isSqliteNativeOpenFailure } from "./sqlite-error-diagnostics.js";
 import { createPrivateSqliteTempDirectory } from "./sqlite-private-directory.js";
 import {
   acquireSqliteStagingToken,
@@ -17,7 +17,8 @@ import {
 } from "./sqlite-staging-token.js";
 
 const scratchName =
-  /^openclaw-backup-(?:retired-)?(?:[A-Za-z0-9]{6}|[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})$/u;
+  /^openclaw-backup-(?:owned-|retired-)?(?:[A-Za-z0-9]{6}|[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})$/u;
+const ownedPrefix = "openclaw-backup-owned-";
 const retiredPrefix = "openclaw-backup-retired-";
 
 export type BackupScratch = { directory: string; release: SqliteStagingToken; boundary: Root };
@@ -32,12 +33,17 @@ export type BackupScratchReport = {
 
 export async function createBackupScratchDirectory(root: string): Promise<BackupScratch> {
   for (let attempt = 0; ; attempt += 1) {
-    const directory = await createPrivateSqliteTempDirectory(root, "openclaw-backup-");
+    const directory = await createPrivateSqliteTempDirectory(root, ownedPrefix);
     let boundary: Root | undefined;
     try {
       boundary = await createRoot(directory);
-      const observed = await fs.lstat(directory);
-      if (!observed.isDirectory() || !sameFileIdentity(observed, await boundary.stat("."))) {
+      const observed = await fs.lstat(directory, { bigint: true });
+      const admitted = await boundary.stat(".");
+      if (
+        !observed.isDirectory() ||
+        !admitted.exactIdentity ||
+        !sameFileIdentity(observed, admitted.exactIdentity)
+      ) {
         throw new Error("Backup scratch directory identity changed");
       }
       return { directory, boundary, release: acquireSqliteStagingToken(directory, "create") };
@@ -47,7 +53,12 @@ export async function createBackupScratchDirectory(root: string): Promise<Backup
       if (
         isSqliteLockError(error) ||
         error instanceof SqliteStagingRetiredError ||
-        hasErrnoCode(error, "ENOENT")
+        ((isMissingPathError(error) ||
+          isSqliteNativeOpenFailure(error) ||
+          (error instanceof FsSafeError &&
+            error.code === "path-mismatch" &&
+            isMissingPathError(error.cause))) &&
+          (await wasScratchReclaimed(directory)))
       ) {
         if (attempt < 2) {
           continue;
@@ -80,10 +91,7 @@ function reportScratchMessage(
   }
 }
 
-async function wasScratchReclaimed(directory: string, error: unknown): Promise<boolean> {
-  if (!isMissingPathError(error)) {
-    return false;
-  }
+async function wasScratchReclaimed(directory: string): Promise<boolean> {
   try {
     await fs.lstat(directory);
     return false;
@@ -122,7 +130,8 @@ async function inspectScratchPayload(
       item.isFile() &&
       ((layout === "root" &&
         (SQLITE_STAGING_TOKEN_FILES.some((control) => control === name) ||
-          /^config-\d+$/u.test(name))) ||
+          /^config-\d+$/u.test(name) ||
+          name === "archive.tar.gz")) ||
         (layout === "sqlite"
           ? /^database\.sqlite(?:-wal|-shm|-journal)?$/u.test(name)
           : /^(?:openclaw-state-db-\d+\.sqlite(?:-wal|-shm|-journal)?|legacy-audit-raw-\d+\.jsonl)$/u.test(
@@ -132,6 +141,20 @@ async function inspectScratchPayload(
       continue;
     }
     throw new Error(`Unrecognized backup scratch content: ${location}`);
+  }
+}
+
+async function removeBackupScratchPayload(boundary: Root): Promise<void> {
+  for await (const entry of boundary.entries(".")) {
+    if (!SQLITE_STAGING_TOKEN_FILES.some((control) => control === entry.name)) {
+      await boundary.remove(entry.name, {
+        recursive: true,
+        force: true,
+        mutationSymlinks: "reject",
+        maxEntries: Infinity,
+        maxDepth: Infinity,
+      });
+    }
   }
 }
 
@@ -148,19 +171,22 @@ async function cleanupBackupScratchDirectory(
   let boundary = initialBoundary;
   try {
     if (boundary && !path.basename(directory).startsWith(retiredPrefix)) {
-      const expected = await boundary.stat(".");
+      const expected = (await boundary.stat(".")).exactIdentity;
+      if (!expected) {
+        throw new Error("Backup scratch directory identity unavailable");
+      }
       const parent = await createRoot(path.dirname(directory));
       const retiredPath = await createPrivateSqliteTempDirectory(parent.rootReal, retiredPrefix);
       const retiredName = path.basename(retiredPath);
-      const reservation = await fs.lstat(retiredPath);
+      const reservation = await fs.lstat(retiredPath, { bigint: true });
       // The committed token fenced every writer before this move into our empty reservation.
       // The retired name survives failures after the token itself is removed.
       await parent.move(path.basename(directory), retiredName, {
         overwrite: true,
         mutationSymlinks: "reject",
         assertBeforeMutation: () => {
-          const current = fsSync.lstatSync(directory);
-          const destination = fsSync.lstatSync(retiredPath);
+          const current = fsSync.lstatSync(directory, { bigint: true });
+          const destination = fsSync.lstatSync(retiredPath, { bigint: true });
           if (
             !current.isDirectory() ||
             !sameFileIdentity(expected, current) ||
@@ -173,24 +199,14 @@ async function cleanupBackupScratchDirectory(
       });
       directory = path.join(parent.rootReal, retiredName);
       boundary = await createRoot(directory);
-      if (!sameFileIdentity(expected, await boundary.stat("."))) {
+      const retired = await boundary.stat(".");
+      if (!retired.exactIdentity || !sameFileIdentity(expected, retired.exactIdentity)) {
         throw new Error("Retired backup scratch directory identity changed");
       }
     }
-    // Keep the lifetime token until all payload bytes are gone, so a partial
-    // cleanup can be retried without losing proof that its writer retired.
+    // Payload was removed under the exclusive token before committing retirement.
+    // Only the controls and empty directory remain after the handles close.
     if (boundary) {
-      for await (const entry of boundary.entries(".")) {
-        if (!SQLITE_STAGING_TOKEN_FILES.some((control) => control === entry.name)) {
-          await boundary.remove(entry.name, {
-            recursive: true,
-            force: true,
-            mutationSymlinks: "reject",
-            maxEntries: Infinity,
-            maxDepth: Infinity,
-          });
-        }
-      }
       for (const control of SQLITE_STAGING_TOKEN_FILES) {
         await boundary.remove(control, { force: true, mutationSymlinks: "reject" });
       }
@@ -200,7 +216,7 @@ async function cleanupBackupScratchDirectory(
     await fs.rmdir(directory);
     return { status: "reclaimed" };
   } catch (error) {
-    if (await wasScratchReclaimed(directory, error)) {
+    if (await wasScratchReclaimed(directory)) {
       return { status: "already-reclaimed", directory };
     }
     const warning = `Backup scratch cleanup failed at ${directory}: ${formatErrorMessage(error)}. Run \`openclaw doctor --fix\` to retry cleanup.`;
@@ -215,6 +231,10 @@ export async function finishBackupScratch(
 ): Promise<string | undefined> {
   let retirementFailure: unknown;
   try {
+    scratch.release = scratch.release.beginRetirement();
+    // The exclusive token excludes readers while payload deletion makes space
+    // for SQLite's retirement page/journal without a filesystem-specific reserve.
+    await removeBackupScratchPayload(scratch.boundary);
     scratch.release(true);
   } catch (error) {
     retirementFailure = error;
@@ -276,8 +296,11 @@ export async function maintainBackupScratch(params: {
         }
         let release: SqliteStagingToken | undefined;
         try {
-          const before = await fs.lstat(directory);
-          if (!before.isDirectory() || (process.getuid && before.uid !== process.getuid())) {
+          const before = await fs.lstat(directory, { bigint: true });
+          if (
+            !before.isDirectory() ||
+            (process.getuid && before.uid !== BigInt(process.getuid()))
+          ) {
             continue;
           }
           const token = await fs
@@ -288,8 +311,13 @@ export async function maintainBackupScratch(params: {
               }
               throw error;
             });
-          await inspectScratchPayload(directory);
-          if (!token && !entry.name.startsWith(retiredPrefix)) {
+          const owned = entry.name.startsWith(ownedPrefix);
+          // Live snapshots can remove journals while inspection awaits lstat.
+          // Token-backed and newly owned repair inspect after exclusive admission below.
+          if (!params.repair || (!token && !owned)) {
+            await inspectScratchPayload(directory);
+          }
+          if (!token && !owned && !entry.name.startsWith(retiredPrefix)) {
             report.warnings.push(
               `Legacy backup scratch at ${directory} has no lifetime token. Confirm older backup processes have stopped before removing it.`,
             );
@@ -299,19 +327,23 @@ export async function maintainBackupScratch(params: {
             report.unchecked.push(directory);
             continue;
           }
-          if (token) {
-            release = acquireSqliteStagingToken(directory, "reclaim");
+          if (token || owned) {
+            // New creators and reclaimers arbitrate the same token before payload admission.
+            release = acquireSqliteStagingToken(directory, "reclaim", { allowMissing: owned });
           }
           const boundary = await createRoot(directory);
-          const current = await fs.lstat(directory);
+          const current = await fs.lstat(directory, { bigint: true });
+          const admitted = await boundary.stat(".");
           if (
             !current.isDirectory() ||
             !sameFileIdentity(before, current) ||
-            !sameFileIdentity(before, await boundary.stat("."))
+            !admitted.exactIdentity ||
+            !sameFileIdentity(before, admitted.exactIdentity)
           ) {
             throw new Error("Scratch directory identity changed");
           }
           await inspectScratchPayload(directory);
+          await removeBackupScratchPayload(boundary);
           release?.(true);
           const cleanup = await cleanupBackupScratchDirectory(directory, boundary, () => {});
           if (cleanup.status === "failed") {
@@ -324,7 +356,7 @@ export async function maintainBackupScratch(params: {
         } catch (error) {
           if (isSqliteLockError(error)) {
             report.active.push(directory);
-          } else if (await wasScratchReclaimed(directory, error)) {
+          } else if (await wasScratchReclaimed(directory)) {
             report.alreadyReclaimed.push(directory);
           } else {
             report.warnings.push(
