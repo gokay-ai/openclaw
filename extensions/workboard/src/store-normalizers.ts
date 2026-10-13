@@ -460,11 +460,21 @@ function normalizeAttempt(record: Record<string, unknown>): WorkboardRunAttempt 
   });
 }
 
-function normalizeComment(record: Record<string, unknown>): WorkboardComment | null {
+function normalizeComment(
+  record: Record<string, unknown>,
+  stored: readonly WorkboardComment[] = [],
+): WorkboardComment | null {
   const id = normalizeOptionalString(record.id);
-  // addComment still rejects oversized operator input. Cap here so dispatch
-  // and other card writes can heal already-stored bodies instead of aborting.
-  const body = capText(normalizeOptionalString(record.body), 2000);
+  const rawBody = normalizeOptionalString(record.body);
+  // Card rewrites (dispatch reclaim, promote, block) copy stored comments back
+  // through here. Rows written before the 2000-char limit, or by internal
+  // writers, must round-trip unchanged; new or edited bodies keep the limit.
+  const body =
+    id &&
+    rawBody &&
+    stored.some((comment) => comment.id === id && normalizeOptionalString(comment.body) === rawBody)
+      ? rawBody
+      : normalizeBoundedString(record.body, undefined, 2000, "comment body");
   const createdAt = normalizeTimestamp(record.createdAt, 0);
   if (!id || !body || !createdAt) {
     return null;
@@ -874,7 +884,7 @@ export function normalizeMetadata(
     ),
     comments: normalizeList(
       record.comments,
-      normalizeComment,
+      (entry) => normalizeComment(entry, fallback.comments),
       MAX_CARD_COMMENTS,
       fallback.comments,
     ),

@@ -5,7 +5,7 @@ import { computeCardDiagnostics } from "./store-card-helpers.js";
 import { createWorkboardSqliteTestHarness } from "./test/sqlite-store.js";
 
 describe("WorkboardStore dispatch comment limits", () => {
-  it("heals oversized diagnostic summary comments during dispatch without aborting reclaim", async () => {
+  it("keeps stored oversized comment bodies intact through dispatch reclaim", async () => {
     const { store, dbPath } = createWorkboardSqliteTestHarness();
     const stranded = await Promise.all(
       Array.from({ length: 18 }, (_, index) =>
@@ -56,9 +56,7 @@ describe("WorkboardStore dispatch comment limits", () => {
 
     expect(dispatch.reclaimed).toEqual([expect.objectContaining({ id: expired.id })]);
     expect(dispatch.reclaimed[0]?.metadata?.claim).toBeUndefined();
-    const repaired = await store.get(expired.id);
-    expect(repaired?.metadata?.comments?.[0]?.body).toBe(`${oversized.slice(0, 1999)}…`);
-    expect(repaired?.metadata?.comments?.[0]?.body.length).toBeLessThanOrEqual(2000);
+    expect((await store.get(expired.id))?.metadata?.comments?.[0]?.body).toBe(oversized);
     await expect(store.get(sibling.id)).resolves.toEqual(sibling);
 
     const verifyDb = new DatabaseSync(dbPath, { readOnly: true });
@@ -67,9 +65,32 @@ describe("WorkboardStore dispatch comment limits", () => {
         verifyDb
           .prepare("SELECT body FROM workboard_card_comments WHERE id = ?")
           .get("oversized-summary"),
-      ).toEqual({ body: `${oversized.slice(0, 1999)}…` });
+      ).toEqual({ body: oversized });
     } finally {
       verifyDb.close();
     }
+
+    const tooLong = "x".repeat(2001);
+    await expect(store.addComment(expired.id, { body: tooLong })).rejects.toThrow(
+      "comment body must be 2000 characters or fewer (got 2001).",
+    );
+    const stored = (await store.get(expired.id))?.metadata;
+    await expect(
+      store.update(expired.id, {
+        metadata: {
+          ...stored,
+          comments: [...(stored?.comments ?? []), { id: "new", body: tooLong, createdAt: now }],
+        },
+      }),
+    ).rejects.toThrow("comment body must be 2000 characters or fewer (got 2001).");
+    await expect(
+      store.update(expired.id, {
+        metadata: {
+          ...stored,
+          comments: [{ id: "oversized-summary", body: `${oversized} edited`, createdAt: now }],
+        },
+      }),
+    ).rejects.toThrow("comment body must be 2000 characters or fewer");
+    expect((await store.get(expired.id))?.metadata?.comments?.[0]?.body).toBe(oversized);
   });
 });
