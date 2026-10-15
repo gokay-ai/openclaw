@@ -255,16 +255,7 @@ export async function tryReuseCodexLiveThread(
       if (!creationPolicy && params.appServer.serviceTier === "ultrafast") {
         throw new CodexIncognitoPolicyChangeError("compaction settings");
       }
-      await params.buildFinalConfigPatch?.(
-        {
-          action: "resume",
-          binding,
-          ...(options.nativeModelInputTools
-            ? { nativeModelInputTools: options.nativeModelInputTools }
-            : {}),
-        },
-        params.client,
-      );
+      await prepareCodexThreadFinalConfigPatch(params, options.nativeModelInputTools, binding);
       throwIfAborted();
       params.assertCurrent?.();
       return { kind: "ready", binding: { ...binding, lifecycle: { action: "resumed" } } };
@@ -311,19 +302,18 @@ export async function tryReuseCodexLiveThread(
     try {
       let pendingRetention: Promise<boolean> | undefined;
       if (retainSubscription) {
-        // A passive refusal still needs current durable lineage to republish.
-        // Start retention synchronously under that read, then await its eviction work.
-        const retain = () => {
-          assertWarmOwner();
-          if (isSameCodexAppServerThreadOwner(params.bindingStore.read(bindingIdentity), binding)) {
-            pendingRetention = retainCodexAppServerBindingSubscription(
-              params.client,
-              binding.threadId,
-              ownership,
-            );
-          }
-        };
         try {
+          const currentBinding = await params.bindingStore.readAsync(bindingIdentity);
+          const retain = () => {
+            assertWarmOwner();
+            if (isSameCodexAppServerThreadOwner(currentBinding, binding)) {
+              pendingRetention = retainCodexAppServerBindingSubscription(
+                params.client,
+                binding.threadId,
+                ownership,
+              );
+            }
+          };
           if (params.authority) {
             await params.authority.withCurrent(retain);
           } else {

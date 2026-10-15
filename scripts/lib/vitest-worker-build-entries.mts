@@ -5,6 +5,7 @@ import { discordAudioTestEntrypoints } from "../../extensions/discord/src/voice/
 import { logbookSqliteBackendEntrypoint } from "../../extensions/logbook/src/sqlite-backend-entrypoint.test-support.ts";
 import { memoryForgetFaultEntrypoint } from "../../extensions/memory-core/src/memory-forget-fault-entrypoint.test-support.ts";
 import { memoryForgetPlanningObserverEntrypoint } from "../../extensions/memory-core/src/memory-forget-planning-observer-entrypoint.test-support.ts";
+import { memoryAdmissionRestartEntrypoint } from "../../extensions/memory-core/src/memory/manager-publication-admission-entrypoint.test-support.ts";
 import { memoryPublicationFaultEntrypoint } from "../../extensions/memory-core/src/memory/manager-publication-fault-entrypoint.test-support.ts";
 import { vectorKnnParentEntrypoint } from "../../extensions/memory-core/src/memory/manager-search-knn-runtime.test-support.ts";
 import { realtimeAudioTestEntrypoints } from "../../extensions/openai/realtime-audio-worker-entrypoints.test-support.ts";
@@ -112,6 +113,8 @@ import { nativeSchtasksIntegrationEnabled } from "./vitest-worker-declarations.m
 
 // These fixture hooks require physical module boundaries and complete namespaces.
 export const preservedModuleBuildSources = [
+  "scripts/update-gateway-build.mts",
+  "scripts/stage-bundled-plugin-runtime.mts",
   "extensions/acpx/src/runtime.admission-retention.test-support.ts",
   "scripts/lib/tsdown-declaration-boundary.mts",
   "scripts/lib/sqlite-reliability-writer.ts",
@@ -120,6 +123,7 @@ export const preservedModuleBuildSources = [
   "scripts/check-plugin-gateway-gauntlet.mts",
   "scripts/lib/managed-child-process.mts",
   "scripts/e2e/kitchen-sink-rpc-walk.mts",
+  "scripts/code-mode-model-matrix.ts",
   "scripts/control-ui-i18n.ts",
   "scripts/test-docker-all.mts",
   "scripts/run-tsgo-core-test-shards.mts",
@@ -273,6 +277,7 @@ export const preservedModuleBuildAssets = [
   "scripts/e2e/parallels/parallels-exec.py",
   ".github/workflows/plugin-npm-release.yml",
   "scripts/lib/vitest-worker-bootstrap.mts",
+  "scripts/lib/vitest-worker-descriptor.mts",
 ];
 
 // Test-only roots share the invocation generation without changing package entries.
@@ -312,6 +317,7 @@ export const vitestWorkerBuildEntries = {
     nativeWorkerTestEntrypoint,
     agentWorkerStoreFixtureEntrypoint,
     memoryPublicationFaultEntrypoint,
+    memoryAdmissionRestartEntrypoint,
     memoryForgetFaultEntrypoint,
     memoryForgetPlanningObserverEntrypoint,
     sqliteReadOnlyCompileCacheParentEntrypoint,

@@ -1,7 +1,7 @@
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { describe, expect, it, vi } from "vitest";
-import { CODEX_CATALOG_LOCAL_HOST_RESPONSE_TIMEOUT_MS } from "./session-catalog-limits.js";
+import { CODEX_CATALOG_HOST_RESPONSE_TIMEOUT_MS } from "./session-catalog-limits.js";
 import {
   fixture,
   nodeFixture,
@@ -12,7 +12,9 @@ import { CODEX_APP_SERVER_THREADS_LIST_COMMAND } from "./session-catalog-parsing
 import { CODEX_TERMINAL_START_COMMAND } from "./session-catalog-terminal.js";
 import type { CodexSessionCatalogPage } from "./session-catalog-types.js";
 
-const adoption = vi.hoisted(() => ({ hold: undefined as Promise<never> | undefined }));
+const adoption = vi.hoisted(() => ({
+  hold: undefined as { promise: Promise<Map<string, never>>; started: () => void } | undefined,
+}));
 
 vi.mock("./session-catalog-adoption.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./session-catalog-adoption.js")>();
@@ -22,7 +24,8 @@ vi.mock("./session-catalog-adoption.js", async (importOriginal) => {
       (params: Parameters<typeof actual.listAdoptedSessionEntries>[0]) => {
         const held = adoption.hold;
         adoption.hold = undefined;
-        return held ?? actual.listAdoptedSessionEntries(params);
+        held?.started();
+        return held?.promise ?? actual.listAdoptedSessionEntries(params);
       },
     ),
   };
@@ -492,38 +495,61 @@ describe("Codex catalog list operation", () => {
     }
   });
 
-  it("times out progressive local publication when page.next stalls past the host budget", async () => {
+  it.each([
+    { phase: "page", progressive: false },
+    { phase: "page", progressive: true },
+    { phase: "adoption", progressive: false },
+    { phase: "adoption", progressive: true },
+  ])("isolates a stalled $phase with progressive=$progressive", async ({ phase, progressive }) => {
     const f = await fixture(2);
     vi.useFakeTimers();
-    const surviving = createDeferred<CodexSessionCatalogPage>();
-    const survivorStarted = createDeferred<void>();
+    const started = createDeferred<void>();
+    const heldPage = createDeferred<CodexSessionCatalogPage>();
+    const heldAdoption = createDeferred<Map<string, never>>();
+    if (phase === "adoption") {
+      adoption.hold = { promise: heldAdoption.promise, started: started.resolve };
+    }
     f.listPage.mockImplementation(async (home) => {
-      if (home === "home-0") {
-        return new Promise(() => {});
+      if (home !== "home-0") {
+        if (phase === "adoption") {
+          await started.promise;
+        }
+        return page(["survivor"]);
       }
-      survivorStarted.resolve();
-      return surviving.promise;
+      if (phase === "page") {
+        started.resolve();
+        return heldPage.promise;
+      }
+      return page(["stalled"]);
     });
-    const operation = f.start({ allowPartialResults: true });
+    const operation = f.start({ allowPartialResults: progressive });
     const advancing = observe(operation.next());
     try {
-      await survivorStarted.promise;
-      surviving.resolve(page(["survivor"]));
-      await vi.advanceTimersByTimeAsync(250);
-      expect(advancing.state.settled).toBe(true);
-      await expect(advancing.done).resolves.toMatchObject({
-        status: "fulfilled",
-        value: {
-          done: true,
-          hosts: [
-            { hostId: f.homes[0]!.hostId, pending: true, sessions: [] },
-            { hostId: f.homes[1]!.hostId, sessions: [{ threadId: "survivor" }] },
-          ],
-        },
-      });
-      operation.close();
-      expect(f.onHost.mock.calls.map(([host]) => host.hostId)).toEqual([f.homes[1]!.hostId]);
-      await vi.advanceTimersByTimeAsync(CODEX_CATALOG_LOCAL_HOST_RESPONSE_TIMEOUT_MS);
+      await started.promise;
+      if (progressive) {
+        await vi.advanceTimersByTimeAsync(250);
+        await expect(advancing.done).resolves.toMatchObject({
+          status: "fulfilled",
+          value: {
+            done: true,
+            hosts: [{ pending: true }, { sessions: [{ threadId: "survivor" }] }],
+          },
+        });
+        operation.close();
+      }
+      await vi.advanceTimersByTimeAsync(CODEX_CATALOG_HOST_RESPONSE_TIMEOUT_MS);
+      if (!progressive) {
+        await expect(advancing.done).resolves.toMatchObject({
+          status: "fulfilled",
+          value: {
+            done: true,
+            hosts: [
+              { error: { code: "APP_SERVER_UNAVAILABLE" } },
+              { sessions: [{ threadId: "survivor" }] },
+            ],
+          },
+        });
+      }
       await Promise.all(f.publications);
       expect(f.onHost).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -533,95 +559,17 @@ describe("Codex catalog list operation", () => {
           error: expect.objectContaining({ code: "APP_SERVER_UNAVAILABLE" }),
         }),
       );
-      expect(f.onHost).toHaveBeenCalledWith(
-        expect.objectContaining({
-          hostId: f.homes[1]!.hostId,
-          sessions: [expect.objectContaining({ threadId: "survivor" })],
-        }),
-      );
-    } finally {
-      surviving.resolve(page([]));
-      await advancing.done;
-      operation.close();
-      await Promise.allSettled(f.publications);
-      vi.useRealTimers();
-    }
-  });
-
-  it("returns a sibling local host when one exceeds the catalog response timeout", async () => {
-    const f = await fixture(2);
-    vi.useFakeTimers();
-    const surviving = createDeferred<CodexSessionCatalogPage>();
-    const survivorStarted = createDeferred<void>();
-    f.listPage.mockImplementation(async (home) => {
-      if (home === "home-0") {
-        return new Promise(() => {});
-      }
-      survivorStarted.resolve();
-      return surviving.promise;
-    });
-    const operation = f.start();
-    const advancing = observe(operation.next());
-    try {
-      await survivorStarted.promise;
-      surviving.resolve(page(["survivor"]));
-      await nextTurn();
-      await vi.advanceTimersByTimeAsync(CODEX_CATALOG_LOCAL_HOST_RESPONSE_TIMEOUT_MS);
-      await expect(advancing.done).resolves.toMatchObject({
-        status: "fulfilled",
-        value: {
-          done: true,
-          hosts: [
-            { error: { code: "APP_SERVER_UNAVAILABLE" } },
-            { sessions: [{ threadId: "survivor" }] },
-          ],
-        },
-      });
-    } finally {
-      surviving.resolve(page([]));
-      await advancing.done;
-      operation.close();
-      await Promise.allSettled(f.publications);
-      vi.useRealTimers();
-    }
-  });
-
-  it("times out a local host whose adoption read stalls after paging completes", async () => {
-    const f = await fixture(2);
-    vi.useFakeTimers();
-    const surviving = createDeferred<CodexSessionCatalogPage>();
-    const survivorStarted = createDeferred<void>();
-    adoption.hold = new Promise<never>(() => {});
-    f.listPage.mockImplementation(async (home) => {
-      if (home === "home-0") {
-        return page(["stalled"]);
-      }
-      survivorStarted.resolve();
-      return surviving.promise;
-    });
-    const operation = f.start();
-    const advancing = observe(operation.next());
-    try {
-      await survivorStarted.promise;
-      await nextTurn();
-      expect(adoption.hold).toBeUndefined();
-      surviving.resolve(page(["survivor"]));
-      await nextTurn();
-      await vi.advanceTimersByTimeAsync(CODEX_CATALOG_LOCAL_HOST_RESPONSE_TIMEOUT_MS);
-      expect(advancing.state.settled).toBe(true);
-      await expect(advancing.done).resolves.toMatchObject({
-        status: "fulfilled",
-        value: {
-          done: true,
-          hosts: [
-            { hostId: f.homes[0]!.hostId, error: { code: "APP_SERVER_UNAVAILABLE" } },
-            { hostId: f.homes[1]!.hostId, sessions: [{ threadId: "survivor" }] },
-          ],
-        },
-      });
+      heldPage.resolve(page(["late"]));
+      heldAdoption.resolve(new Map());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(
+        f.onHost.mock.calls.filter(([host]) => host.hostId === f.homes[0]!.hostId),
+      ).toHaveLength(1);
     } finally {
       adoption.hold = undefined;
-      surviving.resolve(page([]));
+      heldPage.resolve(page([]));
+      heldAdoption.resolve(new Map());
+      await advancing.done;
       operation.close();
       await Promise.allSettled(f.publications);
       vi.useRealTimers();

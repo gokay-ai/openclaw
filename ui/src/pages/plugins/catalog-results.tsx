@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { For, onSettled } from "solid-js";
+import { createMemo, For, onSettled } from "solid-js";
 import { comparePluginCatalogEntries } from "../../../../packages/plugin-package-contract/src/catalog-order.js";
 import { Icon } from "../../components/solid/icon.tsx";
 import { PanelEmptyState } from "../../components/solid/panel-empty-state.tsx";
@@ -225,9 +225,10 @@ export function formatCompactCount(value: number): string {
   if (value < 1_000) {
     return new Intl.NumberFormat().format(value);
   }
-  const scale = value < 1_000_000 ? 1_000 : 1_000_000;
+  const scale = value >= 999_500_000 ? 1_000_000_000 : value >= 999_500 ? 1_000_000 : 1_000;
   const count = value / scale;
-  return `${count >= 100 ? Math.round(count) : Number(count.toFixed(1))}${scale === 1_000 ? "k" : "m"}`;
+  const suffix = scale === 1_000 ? "k" : scale === 1_000_000 ? "m" : "b";
+  return `${count >= 100 ? Math.round(count) : Number(count.toFixed(1))}${suffix}`;
 }
 
 function CatalogCard(props: {
@@ -374,6 +375,12 @@ function CatalogSection(params: {
 }
 
 function CategoryChips(props: PluginCatalogResultsProps): JSX.Element {
+  const sourceCategories = createMemo(() => props.categories);
+  const categories = createMemo(() =>
+    sourceCategories()
+      .filter((category) => category.slug !== "other")
+      .toSorted((left, right) => left.order - right.order),
+  );
   return (
     <div class="plugin-catalog-chips" role="group" aria-label={t("pluginsPage.categoriesLabel")}>
       <For each={[["all", "pluginsPage.intentAll", "layoutGrid"], ...PROMOTED_SECTIONS] as const}>
@@ -411,12 +418,7 @@ function CategoryChips(props: PluginCatalogResultsProps): JSX.Element {
           ))}
         </>
       ) : undefined}
-      <For
-        each={props.categories
-          .filter((category) => category.slug !== "other")
-          .toSorted((left, right) => left.order - right.order)}
-        keyed={(item) => item.slug}
-      >
+      <For each={categories()} keyed={(item) => item.slug}>
         {(item) => (
           <button
             type="button"
@@ -444,9 +446,9 @@ function renderCatalogEmptyState(): JSX.Element {
 }
 
 function RawResults(props: PluginCatalogResultsProps): JSX.Element {
-  const items = () => props.result?.items ?? [];
-  const official = () => items().filter((plugin) => plugin.catalog.official);
-  const community = () => items().filter((plugin) => !plugin.catalog.official);
+  const items = createMemo(() => props.result?.items ?? []);
+  const official = createMemo(() => items().filter((plugin) => plugin.catalog.official));
+  const community = createMemo(() => items().filter((plugin) => !plugin.catalog.official));
   return (
     <>
       {props.loading ? (
@@ -501,17 +503,20 @@ function RawResults(props: PluginCatalogResultsProps): JSX.Element {
 }
 
 function GroupedCatalog(props: PluginCatalogResultsProps): JSX.Element {
-  const items = () => props.result?.items ?? [];
-  const categories = () =>
-    props.categories
+  const items = createMemo(() => props.result?.items ?? []);
+  const sourceCategories = createMemo(() => props.categories);
+  const categories = createMemo(() =>
+    sourceCategories()
       .filter((category) => category.slug !== "other")
-      .toSorted((left, right) => left.order - right.order);
-  const hasAnySection = () =>
-    props.featured.length > 0 ||
-    props.trending.length > 0 ||
+      .toSorted((left, right) => left.order - right.order),
+  );
+  const hasCategoryItems = createMemo(() =>
     items().some((plugin) =>
       categories().some((category) => plugin.catalog.categories.includes(category.slug)),
-    );
+    ),
+  );
+  const hasAnySection = () =>
+    props.featured.length > 0 || props.trending.length > 0 || hasCategoryItems();
   return (
     <>
       {!hasAnySection() && !props.loading && !props.error && !props.remoteError ? (

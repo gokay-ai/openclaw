@@ -237,6 +237,15 @@ export async function markRestartAbortedMainSessions(params: {
                 run.sessionId === entry.sessionId &&
                 (entry.lifecycleRunId === run.runId ||
                   entry.restartRecoveryDeliveryRunId === run.runId ||
+                  // Terminal persistence clears lifecycleRunId but retains this paired fence.
+                  (entry.status === "interrupted" &&
+                    entry.abortedLastRun === true &&
+                    entry.lastRunId === run.runId &&
+                    entry.restartRecoveryRuns?.some(
+                      (fence) =>
+                        fence.runId === (run.sourceRunId ?? run.runId) &&
+                        fence.lifecycleGeneration === run.lifecycleGeneration,
+                    )) ||
                   run.observedAt === undefined ||
                   asFiniteNumber(entry.updatedAt) === undefined ||
                   (entry.updatedAt < run.observedAt &&
@@ -346,6 +355,7 @@ type OrphanMarkParams = {
 
 function hasOrphanedMainSessionWork(entry: SessionEntry, sessionKey: string): boolean {
   return (
+    entry.archivedAt === undefined &&
     isMainRestartRecoveryCandidate(entry, sessionKey) &&
     (hasMainSessionRecoveryClaim(entry) ||
       entry.abortedLastRun === true ||
@@ -407,7 +417,6 @@ async function markOrphanedMainSessionStore(
       params.assertCommitAllowed?.();
       if (
         !hasOrphanedMainSessionWork(entry, sessionKey) ||
-        entry.archivedAt !== undefined ||
         isRetryableUnadoptedChatClaim(entry) ||
         entry.mainRestartRecovery?.tombstone ||
         (params.expectedSessionId !== undefined && entry.sessionId !== params.expectedSessionId) ||
@@ -533,13 +542,12 @@ export async function markStartupOrphanedMainSessionsForRecovery(params: {
       result.marked += storeResult.marked;
       result.skipped += storeResult.skipped;
       params.startupCheckedStorePaths?.add(key);
-      recordStartupRecoveryStoreResult({ target, lifecycleGeneration, outcome: { ok: true } });
+      recordStartupRecoveryStoreResult({ target, outcome: { ok: true } });
     } catch (error) {
       assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration);
       failedTargets.push(target);
       recordStartupRecoveryStoreResult({
         target,
-        lifecycleGeneration,
         outcome: { ok: false, error },
       });
       mainSessionRecoveryLog.warn(

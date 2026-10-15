@@ -56,8 +56,6 @@ const CODEX_NODE_CONTINUE_COMMANDS = [
   CODEX_CLI_SESSION_RESUME_COMMAND,
 ] as const;
 
-// Catalog refresh is fail-soft: one unhealthy machine must not hold the whole sidebar.
-// The node invoke keeps running so cold native discovery can warm the next poll.
 const continueNodeAdoption =
   createSessionCatalogAdoptionCoordinator<
     Awaited<ReturnType<typeof continueNodeCodexSessionInner>>

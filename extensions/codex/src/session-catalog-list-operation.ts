@@ -16,7 +16,7 @@ import {
   startCodexCatalogListTiming,
 } from "./session-catalog-diagnostics.js";
 import type { CodexCatalogHome } from "./session-catalog-homes.js";
-import { CODEX_CATALOG_LOCAL_HOST_RESPONSE_TIMEOUT_MS } from "./session-catalog-limits.js";
+import { CODEX_CATALOG_HOST_RESPONSE_TIMEOUT_MS } from "./session-catalog-limits.js";
 import type { CatalogNode } from "./session-catalog-node-continue.js";
 import {
   CodexCatalogNodeSnapshots,
@@ -67,6 +67,7 @@ type LocalHost = {
   value?: CodexSessionCatalogHost;
   active?: Promise<void>;
   background?: boolean;
+  deadlineAt?: number;
 };
 
 type PreparedList = {
@@ -178,33 +179,41 @@ function managedMarker(
   };
 }
 
+async function readLocalHostPage(
+  params: ListParams,
+  agentId: string,
+  host: LocalHost,
+): Promise<CodexSessionCatalogHost | undefined> {
+  const remaining =
+    (host.deadlineAt ??= performance.now() + CODEX_CATALOG_HOST_RESPONSE_TIMEOUT_MS) -
+    performance.now();
+  if (remaining <= 0) {
+    throw new CodexCatalogLoadingError();
+  }
+  return await withTimeout(
+    host.page.next().then((step) => {
+      params.signal?.throwIfAborted();
+      return step.done ? projectLocalHost(params, agentId, host.source, step.page) : undefined;
+    }),
+    remaining,
+    "Codex session catalog host timed out. Retry shortly.",
+  );
+}
+
 async function finishLocalHost(
   params: ListParams,
   agentId: string,
   host: LocalHost,
 ): Promise<CodexSessionCatalogHost> {
-  // One host budget covers progressive page.next + projection; stalled pages must not
-  // keep publication pending past CODEX_CATALOG_LOCAL_HOST_RESPONSE_TIMEOUT_MS.
-  const pending = (async (): Promise<CodexSessionCatalogHost> => {
+  try {
     for (;;) {
-      const step = await host.page.next();
-      params.signal?.throwIfAborted();
-      if (step.done) {
-        return await projectLocalHost(params, agentId, host.source, step.page);
+      const value = await readLocalHostPage(params, agentId, host);
+      if (value) {
+        return value;
       }
     }
-  })();
-  try {
-    try {
-      return await withTimeout(
-        pending,
-        CODEX_CATALOG_LOCAL_HOST_RESPONSE_TIMEOUT_MS,
-        "Codex session catalog host timed out",
-      );
-    } catch (error) {
-      void pending.catch(() => undefined);
-      return hostFailure(host.source, error);
-    }
+  } catch (error) {
+    return hostFailure(host.source, error);
   } finally {
     host.page.close();
   }
@@ -349,30 +358,10 @@ class CodexCatalogListDriver {
       return;
     }
     try {
-      // One deadline covers the page read and adoption projection, so a stalled binding
-      // read cannot keep this host active after paging finishes.
-      const pending = (async (): Promise<CodexSessionCatalogHost | undefined> => {
-        const page = await host.page.next();
-        params.signal?.throwIfAborted();
-        return page.done
-          ? await projectLocalHost(params, this.selection().agentId, host.source, page.page)
-          : undefined;
-      })();
-      try {
-        const value = await withTimeout(
-          pending,
-          CODEX_CATALOG_LOCAL_HOST_RESPONSE_TIMEOUT_MS,
-          "Codex session catalog host timed out",
-        );
-        if (value) {
-          host.value = value;
-        }
-      } catch (error) {
-        void pending.catch(() => undefined);
-        throw error;
-      }
+      host.value = await readLocalHostPage(params, this.selection().agentId, host);
     } catch (error) {
       this.localFailed = true;
+      host.page.close();
       host.value = hostFailure(host.source, error);
     }
     if (host.value) {

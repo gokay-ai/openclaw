@@ -190,8 +190,9 @@ current bounded group and resumes after the next quiet period.
 
 Failed session passes, including handled embedding-provider fallback failures,
 retain their pending work and retry after 1, 5, and 15 minutes, subject to the same
-idle gate. After those automatic retries, another transcript change or turn
-activity can start a new retry series. A running turn can extend either delay.
+idle gate. The last automatic retry also waits for any full-rebuild cooldown to
+end. After those automatic retries, another transcript change or turn activity
+can start a new retry series. A running turn can extend either delay.
 
 New session content becomes searchable after that delay. The current turn already
 has its own content in context; `memory_search` does not force a transcript flush.
@@ -211,6 +212,11 @@ failures double that delay up to 30 minutes; a successful rebuild resets it.
 Searches keep reading the published index, and targeted session updates can
 still publish when its identity is valid. Explicit CLI repair bypasses the
 process-local cooldown.
+
+Optional embedding-provider failures also share their 30-second recovery cooldown
+with search-triggered maintenance. Searches retain keyword recall, and existing
+semantic indexes remain intact. An already keyword-only index can still accept
+file updates during the cooldown; semantic indexing resumes after recovery.
 
 When native file watching is unavailable, Memory Core uses background polling
 with a 30-second default interval, including when polling is explicitly enabled

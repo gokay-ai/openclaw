@@ -237,10 +237,14 @@ suite.define(() => {
 
           proof.stage = "parent update while original child continues";
           await send(fixture.updatePrompt);
-          await parent.getByRole("paragraph").filter({ hasText: fixture.updateReply }).waitFor();
           await expect
             .poll(async () => (await rows()).parent.endedAt ?? 0)
             .toBeGreaterThan(initial.parent.endedAt!);
+          const updateReply = parent
+            .getByRole("paragraph")
+            .filter({ hasText: fixture.updateReply });
+          await expect.poll(() => updateReply.count()).toBe(1);
+          await updateReply.waitFor();
           await waiting.waitFor();
           await provider.check();
           const updated = await rows();
@@ -299,7 +303,14 @@ suite.define(() => {
 
           proof.stage = "actual child completion and parent resume";
           provider.releaseChild();
-          await parent.getByRole("paragraph").filter({ hasText: fixture.resumedReply }).waitFor();
+          await expect
+            .poll(async () => (await rows()).parent.endedAt ?? 0)
+            .toBeGreaterThan(updated.parent.endedAt!);
+          const resumedReply = parent
+            .getByRole("paragraph")
+            .filter({ hasText: fixture.resumedReply });
+          await expect.poll(() => resumedReply.count()).toBe(1);
+          await resumedReply.waitFor();
           await waiting.waitFor({ state: "hidden" });
           const completed = await rows();
           expect(completed.parent.hasActiveSubagentRun ?? false).toBe(false);
