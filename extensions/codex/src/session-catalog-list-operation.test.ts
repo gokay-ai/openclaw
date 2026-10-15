@@ -220,15 +220,11 @@ describe("Codex catalog list operation", () => {
   });
 
   it.each(["reject", "no waitUntil"] as const)(
-    "keeps refill inline until a timed-out node's invocation and publication %s",
+    "settles timed-out local work while a node publication can still %s",
     async (outcome) => {
       const f = await fixture();
       vi.useFakeTimers();
       const first = createDeferred<CodexSessionCatalogPage>();
-      const second = createDeferred<CodexSessionCatalogPage>();
-      const third = createDeferred<CodexSessionCatalogPage>();
-      const secondStarted = createDeferred<void>();
-      const thirdStarted = createDeferred<void>();
       const invoked = createDeferred<void>();
       const invokeResult = createDeferred<unknown>();
       const published = createDeferred<void>();
@@ -238,17 +234,7 @@ describe("Codex catalog list operation", () => {
         invoked.resolve();
         return invokeResult.promise;
       });
-      f.listPage.mockImplementation(async (_home, params) => {
-        if (params.cursor === "second") {
-          secondStarted.resolve();
-          return second.promise;
-        }
-        if (params.cursor === "third") {
-          thirdStarted.resolve();
-          return third.promise;
-        }
-        return params.cursor === "fourth" ? page(["visible"]) : first.promise;
-      });
+      f.listPage.mockImplementation(async () => first.promise);
       const operation = f.start({
         hostIds: undefined,
         listNodes: async () => ({
@@ -273,57 +259,41 @@ describe("Codex catalog list operation", () => {
       const advancing = observe(operation.next());
       try {
         await invoked.promise;
-        await vi.advanceTimersByTimeAsync(8_000);
+        await vi.advanceTimersByTimeAsync(CODEX_CATALOG_HOST_RESPONSE_TIMEOUT_MS);
+        expect(advancing.state.settled).toBe(true);
+        await expect(advancing.done).resolves.toMatchObject({
+          status: "fulfilled",
+          value: {
+            done: true,
+            hosts: [
+              { error: { code: "APP_SERVER_UNAVAILABLE" } },
+              { hostId: "node:remote", error: { code: "NODE_INVOKE_FAILED" } },
+            ],
+          },
+        });
+        operation.close();
         first.resolve(page(["managed"], "second"));
-        await expect(
-          Promise.race([
-            secondStarted.promise.then(() => "refilled"),
-            advancing.done.then(() => "settled"),
-          ]),
-        ).resolves.toBe("refilled");
-        expect(advancing.state.settled).toBe(false);
-
         invokeResult.resolve({ payloadJSON: JSON.stringify(page([])) });
         await published.promise;
-        second.resolve(page(["managed"], "third"));
-        await expect(
-          Promise.race([
-            thirdStarted.promise.then(() => "refilled"),
-            advancing.done.then(() => "settled"),
-          ]),
-        ).resolves.toBe("refilled");
-        expect(advancing.state.settled).toBe(false);
-
+        const tails = observe(Promise.allSettled(f.publications));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(f.listPage).toHaveBeenCalledOnce();
+        expect(f.runtime.nodes.invoke).toHaveBeenCalledOnce();
         if (outcome === "reject") {
+          expect(tails.state.settled).toBe(false);
           publication.reject(publicationError);
         } else {
           publication.resolve();
         }
-        await nextTurn();
-        third.resolve(page(["managed"], "fourth"));
-        await expect(advancing.done).resolves.toEqual({
-          status: "fulfilled",
-          value: { done: false },
-        });
-        expect(f.listPage).toHaveBeenCalledTimes(3);
-        await expect(operation.next()).resolves.toMatchObject({
-          done: true,
-          hosts: [
-            { sessions: [{ threadId: "visible" }] },
-            { hostId: "node:remote", error: { code: "NODE_INVOKE_FAILED" } },
-          ],
-        });
-        expect(f.runtime.nodes.invoke).toHaveBeenCalledOnce();
-        const tails = await Promise.allSettled(f.publications);
-        expect(tails.filter((tail) => tail.status === "rejected")).toEqual(
+        await expect(tails.done).resolves.toMatchObject({ status: "fulfilled" });
+        const results = await Promise.allSettled(f.publications);
+        expect(results.filter((tail) => tail.status === "rejected")).toEqual(
           outcome === "reject" ? [{ status: "rejected", reason: publicationError }] : [],
         );
       } finally {
         invokeResult.resolve({ payloadJSON: JSON.stringify(page([])) });
         publication.resolve();
         first.resolve(page([]));
-        second.resolve(page([]));
-        third.resolve(page([]));
         await advancing.done;
         operation.close();
         await Promise.allSettled(f.publications);
