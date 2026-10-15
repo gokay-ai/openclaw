@@ -58,7 +58,7 @@ describe("shared control ownership", () => {
     expect(matchingFiles(/<[a-z][^>]*\srole=["'](?:combobox|listbox|option)["']/u)).toEqual([
       "components/command-palette-view.ts",
       "components/multi-select.ts",
-      "components/select-picker.ts",
+      "components/select-picker-view.ts",
       "pages/chat/components/chat-composer-menu.ts",
       "pages/chat/components/chat-model-account-control.ts",
       "pages/chat/components/chat-model-picker-options.ts",
@@ -74,7 +74,6 @@ describe("shared control ownership", () => {
     expect(matchingFiles(/<resizable-divider\b/u)).toEqual([
       "app/app-shell-view.ts",
       "components/assistant-panel-view.ts",
-      "components/dock-layout-controller.ts",
       "components/dock-layout-solid.ts",
       "pages/chat/chat-page-pane-render.ts",
       "pages/chat/components/chat-sidebar-region.runtime.ts",

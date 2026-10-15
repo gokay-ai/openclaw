@@ -10,6 +10,7 @@ import type {
   GatewaySessionRow,
   SessionsListResult,
 } from "../../../api/types.ts";
+import type { ApplicationContext } from "../../../app/context.ts";
 import type { QuestionPrompt } from "../../../app/question-prompt.ts";
 import type { BrowserTabSelection } from "../../../components/browser/browser-target.ts";
 import { copyMarkdownLabel, handleCopyButton } from "../../../components/copy-button.ts";
@@ -45,7 +46,7 @@ import type { RealtimeTalkConversationEntry } from "../talk/conversation.ts";
 import type { CompactionStatus, RunOutputUsage } from "../tool-stream-contract.ts";
 import type { AsyncQuestionDraft, AsyncQuestionPresentation } from "./chat-async-question.types.ts";
 import { resolveChatContextCopy, usesNativeContextMenu } from "./chat-context-copy.ts";
-import type { ChatHistoryBoundaryProps } from "./chat-history-boundary.ts";
+import type { ChatHistoryBoundaryProps } from "./chat-history-boundary.tsx";
 import {
   dismissConfirmedActionPopovers,
   isConfirmedActionPopoverFocused,
@@ -53,7 +54,7 @@ import {
 } from "./chat-message-confirmation.ts";
 import type { MessageActionDetails, MessageReplyTarget } from "./chat-message-markdown.types.ts";
 import type { ArtifactDownloadResolver } from "./chat-message-media.ts";
-import type { ChatSendStatusActions } from "./chat-message-send-status.ts";
+import type { ChatSendStatusActions } from "./chat-message-send-status-view.tsx";
 import type { ReplyMessageStatus } from "./chat-reply-preview.ts";
 import {
   handleChatSelectionPointerUp,
@@ -109,6 +110,7 @@ type ReplyMessageAccess = {
 
 export type ChatThreadProps = ChatSendStatusActions &
   SubagentRoster & {
+    applicationContext?: ApplicationContext;
     messageReactions?: ReadonlyMap<string, MessageReactionSummary[]>;
     onReact?: (messageId: string, emoji: string, remove: boolean) => void;
     branding?: ThemeBranding;
@@ -150,7 +152,11 @@ export type ChatThreadProps = ChatSendStatusActions &
     persistCommentary?: boolean;
     runActive?: boolean;
     runWorking?: boolean;
+    runFinalizing?: boolean;
     startupLabel?: string;
+    retryAt?: number;
+    onRetryRun?: (runId: string) => void;
+    failureActionsRunId?: string;
     waitingApproval?: boolean;
     questionPrompts?: readonly QuestionPrompt[];
     asyncQuestions?: AsyncQuestionPresentation;
@@ -541,6 +547,7 @@ export function handleTranscriptContextMenu(event: MouseEvent, props: Transcript
     ...(group?.querySelectorAll<HTMLElement>("[data-message-actions-for]") ?? []),
   ].find((element) => element.dataset.messageActionsFor === messageId);
   const copyButton = actionOwner?.querySelector<HTMLButtonElement>(".chat-copy-btn");
+  const readAloudButton = actionOwner?.querySelector<HTMLButtonElement>(".chat-read-aloud-btn");
   const ownsRunFrame = group?.dataset.chatRowKey?.startsWith("agent-run:") === true;
   const canReply = Boolean(replyTarget && props.onSetReply && (!ownsRunFrame || actionOwner));
   const canRewind = isUserMessage && typeof props.onRewindMessage === "function";
@@ -651,6 +658,17 @@ export function handleTranscriptContextMenu(event: MouseEvent, props: Transcript
       onClick: () => {
         removeReplyContextMenu();
         copyButton?.click();
+      },
+    });
+  }
+  if (readAloudButton) {
+    const label = readAloudButton.getAttribute("aria-label") ?? t("chat.messages.readAloud");
+    appendAction({
+      label,
+      tooltip: label,
+      onClick: () => {
+        removeReplyContextMenu();
+        readAloudButton.click();
       },
     });
   }

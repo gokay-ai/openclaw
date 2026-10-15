@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { getAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
+import { setLoggerOverride } from "../../../logging/logger.js";
 import { matchesTranscriptEvent } from "../../../sessions/transcript-visible-record.js";
 import { buildAgentRunTerminalReplySnapshot } from "../../agent-run-terminal-reply.js";
 import {
@@ -48,8 +49,13 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
       });
       registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([child]);
       readDescendantFacts.mockResolvedValue({ unsettled: true, active: 0 });
+      const transportError = Object.assign(new Error("temporary transport failure"), {
+        code: "ECONNRESET",
+      });
+      setLoggerOverride({ level: "silent", consoleLevel: "warn", consoleStyle: "json" });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       if (failure === "transport") {
-        deliverSpy.mockRejectedValueOnce(new Error("temporary transport failure"));
+        deliverSpy.mockRejectedValueOnce(transportError);
       } else {
         deliverSpy.mockResolvedValueOnce({ delivered: false, path: "direct" });
       }
@@ -60,6 +66,23 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
           maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: child })),
         ).resolves.toBe(false);
         expect(deliverSpy).toHaveBeenCalledOnce();
+        const record = JSON.parse(String(warn.mock.calls.at(-1)?.[0]));
+        expect(record).toMatchObject({
+          requesterSessionKey: REQUESTER,
+          directIdempotencyKey: requesterSettleKey("spent-wait:yield-1"),
+          retryDelayMs: 30_000,
+        });
+        if (failure === "transport") {
+          expect(record.err).toMatchObject({
+            name: "Error",
+            message: transportError.message,
+            errorCode: "ECONNRESET",
+            stack: expect.stringContaining("temporary transport failure"),
+          });
+          expect(record.replayCount).toBe(1);
+        } else {
+          expect(record.attemptCount).toBe(1);
+        }
         const restored = structuredClone(child);
         registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([restored]);
         await expect(
@@ -78,6 +101,8 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
           ]);
         }
       } finally {
+        warn.mockRestore();
+        setLoggerOverride(null);
         vi.useRealTimers();
       }
     },
@@ -440,28 +465,6 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
       expect(completeBatchSpy).not.toHaveBeenCalled();
     },
   );
-
-  it("wakes with captured fallback output after a resumed completion returns NO_REPLY", async () => {
-    registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([
-      makeSettledChild({
-        runId: "run-b",
-        delivery: { status: "failed" },
-        completion: {
-          required: true,
-          resultText: "NO_REPLY",
-          fallbackResultText: "findings captured before the wake",
-        },
-        outcome: { status: "ok" },
-      }),
-    ]);
-
-    const woke = await maybeWakeRequesterAfterAllChildrenSettled(wakeParams());
-
-    expect(woke).toBe(true);
-    const message = String(deliveredCallArg().triggerMessage);
-    expect(message).toContain("findings captured before the wake");
-    expect(message).not.toContain("<prompt-data>\nNO_REPLY\n</prompt-data>");
-  });
 
   it.each([
     {

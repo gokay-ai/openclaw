@@ -2,11 +2,10 @@ import type { JSX as SolidJSX } from "@solidjs/web";
 import { createEffect, createMemo, Show } from "solid-js";
 import { t } from "../lib/reactive/i18n.ts";
 import type { LazyRenderer } from "./lazy-renderer.ts";
-import { LitRouteHost } from "./lit-route-host.tsx";
 
-type DevicePairSetupModule = typeof import("../pages/devices/view-pairing.runtime.ts");
-type DevicePairSetupProps = Parameters<DevicePairSetupModule["renderDevicePairSetup"]>[0];
-export type DevicePairSetupLoader = LazyRenderer<DevicePairSetupModule["renderDevicePairSetup"]>;
+type DevicePairSetupModule = typeof import("../pages/devices/view-pairing.tsx");
+type DevicePairSetupProps = Parameters<DevicePairSetupModule["DevicePairSetup"]>[0];
+export type DevicePairSetupLoader = LazyRenderer<DevicePairSetupModule["DevicePairSetup"]>;
 
 // Keep the pairing runtime lazy so opening the shell never fetches this chunk.
 export function DevicePairSetup(props: {
@@ -33,6 +32,7 @@ export function DevicePairSetup(props: {
     <Show when={props.props.open}>
       <Show
         when={state().renderer}
+        keyed
         fallback={
           <openclaw-modal-dialog
             label={t("devices.pairing.title")}
@@ -48,7 +48,7 @@ export function DevicePairSetup(props: {
                   </p>
                 </div>
               </header>
-              <footer class="device-pair-setup__footer">
+              <openclaw-modal-actions class="device-pair-setup__footer">
                 <Show when={state().failed}>
                   <button
                     class="btn btn--primary"
@@ -61,12 +61,12 @@ export function DevicePairSetup(props: {
                 <button class="btn btn--ghost" type="button" onClick={() => props.props.onClose()}>
                   {t("common.close")}
                 </button>
-              </footer>
+              </openclaw-modal-actions>
             </section>
           </openclaw-modal-dialog>
         }
       >
-        <LitRouteHost renderValue={() => state().renderer?.(props.props)} />
+        {(View) => <View {...props.props} />}
       </Show>
     </Show>
   );

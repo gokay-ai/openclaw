@@ -66,7 +66,7 @@ type ArtTileProps = {
   onIconError?: () => void;
   authorIconUrl?: string;
   loading?: boolean;
-  className?: string;
+  class?: string;
   whiteBackground?: boolean;
 };
 
@@ -92,7 +92,7 @@ export function PluginArtTile(props: ArtTileProps): JSX.Element {
     currentImage().state.status === "failed" ? undefined : currentImage().state.source;
   const pending = () =>
     source() ? currentImage().state.status === "loading" : Boolean(props.loading);
-  const className = () => props.className ?? "plugins-tile";
+  const className = () => props.class ?? "plugins-tile";
   const settle = (url: string, status: "ready" | "failed") => {
     const image = currentImage();
     if (disposed || image.state.source !== url) {
@@ -510,7 +510,7 @@ export function renderPluginConsentDialog(props: PluginConsentDialogProps): JSX.
         ) : (
           <p class="plugins-consent__description">{t("pluginConsent.fallback")}</p>
         )}
-        <footer class="plugins-consent__actions">
+        <openclaw-modal-actions class="plugins-consent__actions">
           <button
             type="button"
             class="btn oc-action oc-action-secondary"
@@ -521,7 +521,7 @@ export function renderPluginConsentDialog(props: PluginConsentDialogProps): JSX.
           <ReasonedDisabledControl reason={props.mutationBlockedReason}>
             {confirm}
           </ReasonedDisabledControl>
-        </footer>
+        </openclaw-modal-actions>
       </section>
     </openclaw-modal-dialog>
   );

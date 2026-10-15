@@ -1,3 +1,4 @@
+import { resolveOpenAIResponsesRequestContextTokens } from "@openclaw/ai/internal/openai-responses-payload-policy";
 import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import type { SessionEntry } from "../../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
@@ -29,6 +30,7 @@ import {
 import { DEFAULT_CONTEXT_TOKENS } from "../../defaults.js";
 import { FailoverError } from "../../failover-error.js";
 import { resolveModelContextWindowProfile } from "../../model-context-window.js";
+import { readModelServingContextWindow } from "../../model-serving-context.js";
 import { log } from "../logger.js";
 
 type HookRunnerLike = Pick<
@@ -163,6 +165,8 @@ export function resolveEmbeddedRuntimeModelPolicy(params: {
   nativeModelOwned: boolean;
   contextWindow?: string;
   contextTokenBudget?: number;
+  requestExtraParams?: Record<string, unknown>;
+  requestServiceTiers?: readonly string[];
 }): {
   contextWindowInfo?: ContextWindowInfo;
   contextTokenBudget?: number;
@@ -179,11 +183,13 @@ export function resolveEmbeddedRuntimeModelPolicy(params: {
     catalogEntry: params.runtimeModel,
     selected: params.contextWindow,
   });
+  const servingContextWindow = readModelServingContextWindow(params.runtimeModel);
   const resolvedCtxInfo = resolveContextWindowInfo({
     cfg: params.cfg,
     provider: params.contextConfigProvider ?? params.provider,
     modelId: params.modelId,
     modelContextTokens: asFiniteNumber(params.runtimeModel.contextTokens),
+    modelServingContextWindow: servingContextWindow,
     modelContextWindow: contextWindowProfile.contextTokens,
     modelContextWindowSource: contextWindowProfile.contextWindow
       ? undefined
@@ -228,7 +234,15 @@ export function resolveEmbeddedRuntimeModelPolicy(params: {
     });
   }
 
-  const contextTokenBudget = Math.min(ctxInfo.tokens, params.contextTokenBudget ?? ctxInfo.tokens);
+  const contextTokenBudget = Math.min(
+    ctxInfo.tokens,
+    params.contextTokenBudget ?? ctxInfo.tokens,
+    resolveOpenAIResponsesRequestContextTokens(
+      params.runtimeModel,
+      params.requestExtraParams,
+      params.requestServiceTiers,
+    ) ?? Infinity,
+  );
   const contextWindowInfo =
     contextTokenBudget < ctxInfo.tokens
       ? {
@@ -247,6 +261,7 @@ export function resolveEmbeddedRuntimeModelPolicy(params: {
     // Cold readers match only provider/model/harness, so removable caps and
     // session-selectable windows cannot become persisted model facts.
     contextTokensSource:
+      servingContextWindow === undefined &&
       contextWindowInfo.source === "model" &&
       contextWindowInfo.referenceTokens === undefined &&
       !params.runtimeModel.contextWindows?.length
