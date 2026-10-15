@@ -530,7 +530,7 @@ describe("Codex catalog list operation", () => {
         }),
       );
       heldPage.resolve(page(["late"]));
-      heldAdoption.resolve(new Map());
+      heldAdoption.resolve(new Map<string, never>());
       await vi.advanceTimersByTimeAsync(0);
       expect(
         f.onHost.mock.calls.filter(([host]) => host.hostId === f.homes[0]!.hostId),
@@ -538,7 +538,7 @@ describe("Codex catalog list operation", () => {
     } finally {
       adoption.hold = undefined;
       heldPage.resolve(page([]));
-      heldAdoption.resolve(new Map());
+      heldAdoption.resolve(new Map<string, never>());
       await advancing.done;
       operation.close();
       await Promise.allSettled(f.publications);
